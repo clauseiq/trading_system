@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# State files (local only)
+storage/state/*.json
+storage/state/*.backup*
+storage/state/*.lock
+
+# Logs
+storage/logs/*.log
+*.log
+
+# Environment variables (NEVER upload secrets!)
+.env
+.env.local
+
+# Operating System
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Model files (can be large)
+storage/state/*.json
+storage/state/daytrade_model.json
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~

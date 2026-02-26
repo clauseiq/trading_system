@@ -1,0 +1,12 @@
+pandas
+numpy
+yfinance
+schedule
+pytz
+streamlit
+streamlit-autorefresh
+pyTelegramBotAPI
+
+# Added for DayTradeStrategy — XGBoost intraday model
+# CPU-only on Koyeb free tier (no GPU required)
+xgboost>=2.0.0

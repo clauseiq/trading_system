@@ -1,0 +1,56 @@
+# TRADING SYSTEM CRONTAB
+# Copy to crontab: crontab crontab.txt
+# Edit times: crontab -e
+# View: crontab -l
+#
+# IST = UTC + 5:30
+# 09:00 IST = 03:30 UTC
+# 09:20 IST = 03:50 UTC
+# 09:29 IST = 03:59 UTC
+# 09:30 IST = 04:00 UTC
+# 11:15 IST = 05:45 UTC
+# 15:20 IST = 09:50 UTC
+#
+# Format: MIN HOUR DAY MONTH WEEKDAY COMMAND
+# Weekday: 1-5 (Mon-Fri)
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+PYTHONPATH=/path/to/trading-system
+
+# Set your environment variables
+TELEGRAM_TOKEN=your_token_here
+TELEGRAM_CHAT_ID=your_chat_id_here
+
+# ─── DAY TRADING STRATEGY ───────────────────────────────────────────────────
+
+# 09:00 IST - Train XGBoost model (runs for 30-60 seconds)
+30 3 * * 1-5 cd /path/to/trading-system && /usr/bin/python3 engine/train_daytrade_model.py >> storage/logs/cron.log 2>&1
+
+# 09:29 IST - Generate signals (runs for 5-10 seconds)
+59 3 * * 1-5 cd /path/to/trading-system && /usr/bin/python3 engine/generate_daytrade_signals.py >> storage/logs/cron.log 2>&1
+
+# 09:30 IST - Execute trades (runs for 2-5 seconds)
+0 4 * * 1-5 cd /path/to/trading-system && /usr/bin/python3 engine/execute_daytrade.py >> storage/logs/cron.log 2>&1
+
+# 11:15 IST - Close positions (runs for 5-10 seconds)
+45 5 * * 1-5 cd /path/to/trading-system && /usr/bin/python3 engine/close_daytrade.py >> storage/logs/cron.log 2>&1
+
+# ─── MOMENTUM STRATEGY ──────────────────────────────────────────────────────
+
+# 09:20 IST - Morning session (rebalance every 14 days, otherwise just check stops)
+50 3 * * 1-5 cd /path/to/trading-system && /usr/bin/python3 engine/momentum_morning.py >> storage/logs/cron.log 2>&1
+
+# 15:20 IST - EOD session (update trailing stops, check targets)
+50 9 * * 1-5 cd /path/to/trading-system && /usr/bin/python3 engine/momentum_eod.py >> storage/logs/cron.log 2>&1
+
+# Every 5 minutes during market hours - Refresh live prices (09:15-15:30 IST = 03:45-10:00 UTC)
+*/5 3-10 * * 1-5 cd /path/to/trading-system && /usr/bin/python3 engine/momentum_refresh_prices.py >> storage/logs/cron.log 2>&1
+
+# ─── MAINTENANCE ────────────────────────────────────────────────────────────
+
+# Daily log rotation at midnight IST (18:30 UTC)
+30 18 * * * find /path/to/trading-system/storage/logs -name "*.log" -size +50M -delete
+
+# Weekly cleanup of old state backups (Sundays at 00:00 IST = Saturday 18:30 UTC)
+30 18 * * 6 find /path/to/trading-system/storage/state -name "*.backup_*" -mtime +30 -delete
