@@ -1,0 +1,196 @@
+# Trading Bot - GitHub Actions Workflow
+# Runs automatically at scheduled times (IST)
+
+name: Automated Trading System
+
+on:
+  # Schedule in UTC (IST = UTC + 5:30)
+  schedule:
+    # 09:00 IST = 03:30 UTC - Train model
+    - cron: '30 3 * * 1-5'
+    
+    # 09:30 IST = 04:00 UTC - Execute trades  
+    - cron: '0 4 * * 1-5'
+    
+    # 11:15 IST = 05:45 UTC - Close positions
+    - cron: '45 5 * * 1-5'
+    
+    # 15:20 IST = 09:50 UTC - EOD updates
+    - cron: '50 9 * * 1-5'
+  
+  # Also allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Train model at 9:00 AM IST
+  train-model:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '30 3 * * 1-5'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Train day trade model
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python engine/train_daytrade_model.py
+    
+    - name: Upload model artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: trained-model
+        path: storage/state/daytrade_model.json
+        retention-days: 1
+
+  # Job 2: Execute trades at 9:30 AM IST
+  execute-trades:
+    runs-on: ubuntu-latest
+    needs: train-model
+    if: github.event.schedule == '0 4 * * 1-5'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Download model
+      uses: actions/download-artifact@v3
+      with:
+        name: trained-model
+        path: storage/state/
+    
+    - name: Generate signals
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python engine/generate_daytrade_signals.py
+    
+    - name: Execute trades
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python engine/execute_daytrade.py
+    
+    - name: Upload state
+      uses: actions/upload-artifact@v3
+      with:
+        name: trade-state
+        path: storage/state/
+        retention-days: 1
+
+  # Job 3: Close positions at 11:15 AM IST
+  close-positions:
+    runs-on: ubuntu-latest
+    needs: execute-trades
+    if: github.event.schedule == '45 5 * * 1-5'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Download state
+      uses: actions/download-artifact@v3
+      with:
+        name: trade-state
+        path: storage/state/
+    
+    - name: Close positions
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python engine/close_daytrade.py
+    
+    - name: Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: daily-results
+        path: storage/state/
+        retention-days: 30
+
+  # Job 4: EOD updates at 3:20 PM IST
+  eod-updates:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '50 9 * * 1-5'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Momentum morning check
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python engine/momentum_morning.py
+    
+    - name: Momentum EOD updates
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python engine/momentum_eod.py
