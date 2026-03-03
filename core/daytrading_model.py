@@ -66,25 +66,40 @@ def build_stock_features(df: pd.DataFrame) -> pd.DataFrame:
     return feat
 
 
-def build_nifty_context(nifty_df: pd.DataFrame) -> pd.DataFrame:
+def build_nifty_context(nifty_df):
     """
     Build 3 Nifty context features
-    FIXED: Pandas DataFrame assignment bug
+    FIXED: Handle multi-column DataFrame from yfinance properly
     """
     df = nifty_df.copy()
+    
+    # Handle multi-level columns from yfinance (e.g., ('Close', '^NSEI'))
+    # Flatten to single level if needed
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    
     df.index = pd.to_datetime(df.index)
     df['date'] = df.index.date
     
-    # Gap - FIXED: Use explicit variable assignment
-    prev_close = df.groupby('date')['Close'].transform('last').shift(1)
-    day_open = df.groupby('date')['Open'].transform('first')
-    df['nifty_gap'] = (day_open - prev_close) / prev_close.replace(0, np.nan)
+    # Extract Close and Open as Series (not DataFrames)
+    # Use .squeeze() to convert single-column DataFrame to Series
+    close_series = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
+    open_series = df['Open'].squeeze() if isinstance(df['Open'], pd.DataFrame) else df['Open']
     
-    # Morning return - FIXED: Use .values to avoid DataFrame assignment
-    df['nifty_morn_ret'] = (df['Close'].values - day_open.values) / day_open.replace(0, np.nan).values
+    # Gap - calculate with Series to avoid DataFrame assignment error
+    prev_close = close_series.groupby(df['date']).transform('last').shift(1)
+    day_open = open_series.groupby(df['date']).transform('first')
     
-    # RSI
-    df['nifty_rsi'] = compute_rsi(df['Close'], 14)
+    # Calculate gap as Series (this will be a Series, not DataFrame)
+    gap_series = (day_open - prev_close) / prev_close.replace(0, np.nan)
+    df['nifty_gap'] = gap_series
+    
+    # Morning return - calculate as Series
+    morn_ret_series = (close_series - day_open) / day_open.replace(0, np.nan)
+    df['nifty_morn_ret'] = morn_ret_series
+    
+    # RSI - ensure we pass a Series
+    df['nifty_rsi'] = compute_rsi(close_series, 14)
     
     return df[['nifty_gap', 'nifty_morn_ret', 'nifty_rsi']]
 
