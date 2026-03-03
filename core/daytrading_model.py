@@ -1,69 +1,65 @@
 """
-DAY TRADING MODEL
-XGBoost-based intraday prediction model
+Day Trading Model - XGBoost Intraday Strategy
+FIXED: All DataFrame multi-column assignment issues
 """
 import pandas as pd
 import numpy as np
-from datetime import date
-from typing import Dict, List, Tuple
+import xgboost as xgb
+from datetime import datetime, timedelta
+import json
+from pathlib import Path
+
+from lib.market_data import download_data
 from lib.logger import setup_logger
-from lib.market_data import download_intraday_data, download_nifty_intraday
 from config.config import (
-    DAYTRADE_STATE, DAYTRADE_TRAIN_DAYS, DAYTRADE_UNIVERSE,
-    XGB_PARAMS, DAYTRADE_CONVICTION_THRESHOLD
+    DAYTRADE_STOCKS,
+    DAYTRADE_TRAIN_DAYS,
+    DAYTRADE_INTERVAL,
+    CONVICTION_MIN,
+    STATE_DIR
 )
 
-try:
-    import xgboost as xgb
-    XGB_AVAILABLE = True
-except ImportError:
-    XGB_AVAILABLE = False
+log = setup_logger('daytrading_model')
 
-log = setup_logger(__name__)
 
-# ─── Feature Engineering ─────────────────────────────────────────────────────
-
-def compute_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
+def compute_rsi(series, period=14):
     """Compute RSI indicator"""
-    delta = prices.diff()
+    if len(series) < period + 1:
+        return pd.Series(np.nan, index=series.index)
+    
+    # Ensure we have a Series
+    if isinstance(series, pd.DataFrame):
+        series = series.squeeze()
+    
+    delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 
-def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Compute Average True Range"""
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    return true_range.rolling(period).mean()
-
-
-def build_stock_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Build 9 stock-specific features"""
-    feat = pd.DataFrame(index=df.index)
+def compute_vwap(df):
+    """Compute VWAP - returns Series"""
+    # Extract Series from potentially multi-column DataFrames
+    def extract_series(col):
+        if isinstance(col, pd.DataFrame):
+            if col.shape[1] == 1:
+                return col.iloc[:, 0]
+            else:
+                # If multiple columns, take the first one
+                return col.iloc[:, 0]
+        return col
     
-    # Price-based
-    feat['returns'] = df['Close'].pct_change()
-    feat['log_returns'] = np.log(df['Close'] / df['Close'].shift(1))
+    close = extract_series(df['Close'])
+    high = extract_series(df['High'])
+    low = extract_series(df['Low'])
+    volume = extract_series(df['Volume'])
     
-    # Volatility
-    feat['volatility'] = feat['returns'].rolling(10).std()
-    feat['atr'] = compute_atr(df, 14)
-    
-    # Momentum
-    feat['rsi'] = compute_rsi(df['Close'], 14)
-    feat['price_sma_ratio'] = df['Close'] / df['Close'].rolling(20).mean()
-    
-    # Volume
-    feat['volume_ratio'] = df['Volume'] / df['Volume'].rolling(20).mean()
-    feat['vwap'] = (df['Close'] * df['Volume']).rolling(10).sum() / df['Volume'].rolling(10).sum()
-    feat['vwap_dist'] = (df['Close'] - feat['vwap']) / feat['vwap']
-    
-    return feat
+    typical_price = (high + low + close) / 3
+    vwap = (typical_price * volume).cumsum() / volume.cumsum()
+    return vwap
 
 
 def build_nifty_context(nifty_df):
@@ -73,162 +69,236 @@ def build_nifty_context(nifty_df):
     """
     df = nifty_df.copy()
     
-    # Handle multi-level columns from yfinance (e.g., ('Close', '^NSEI'))
-    # Flatten to single level if needed
+    # Handle multi-level columns from yfinance
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    
+    # Extract single columns if needed
+    def extract_col(col):
+        if isinstance(df[col], pd.DataFrame):
+            if df[col].shape[1] == 1:
+                return df[col].iloc[:, 0]
+            else:
+                return df[col].iloc[:, 0]
+        return df[col]
+    
+    df['Close'] = extract_col('Close')
+    df['Open'] = extract_col('Open')
     
     df.index = pd.to_datetime(df.index)
     df['date'] = df.index.date
     
-    # Extract Close and Open as Series (not DataFrames)
-    # Use .squeeze() to convert single-column DataFrame to Series
-    close_series = df['Close'].squeeze() if isinstance(df['Close'], pd.DataFrame) else df['Close']
-    open_series = df['Open'].squeeze() if isinstance(df['Open'], pd.DataFrame) else df['Open']
+    # Now work with Series
+    close_series = df['Close']
+    open_series = df['Open']
     
-    # Gap - calculate with Series to avoid DataFrame assignment error
+    # Gap - calculate with Series
     prev_close = close_series.groupby(df['date']).transform('last').shift(1)
     day_open = open_series.groupby(df['date']).transform('first')
     
-    # Calculate gap as Series (this will be a Series, not DataFrame)
     gap_series = (day_open - prev_close) / prev_close.replace(0, np.nan)
     df['nifty_gap'] = gap_series
     
-    # Morning return - calculate as Series
+    # Morning return
     morn_ret_series = (close_series - day_open) / day_open.replace(0, np.nan)
     df['nifty_morn_ret'] = morn_ret_series
     
-    # RSI - ensure we pass a Series
+    # RSI
     df['nifty_rsi'] = compute_rsi(close_series, 14)
     
     return df[['nifty_gap', 'nifty_morn_ret', 'nifty_rsi']]
 
 
-def make_labels(df: pd.DataFrame, horizon_bars: int = 4) -> pd.Series:
+def build_stock_features(stock_df, nifty_ctx):
     """
-    Create trading labels
-    Class 2 (LONG): forward return > +1%
-    Class 0 (SHORT): forward return < -1%
-    Class 1 (NEUTRAL): else
+    Build features for one stock
+    FIXED: Handle all multi-column DataFrame assignments
     """
-    fwd_ret = df['Close'].pct_change(horizon_bars).shift(-horizon_bars) * 100
-    labels = pd.Series(1, index=df.index, name='label')
-    labels[fwd_ret > 1.0] = 2   # LONG
-    labels[fwd_ret < -1.0] = 0  # SHORT
-    return labels
+    df = stock_df.copy()
+    
+    # Handle multi-level columns from yfinance
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    
+    # Extract all columns as Series (handle multi-column DataFrames)
+    def extract_col(col):
+        if isinstance(df[col], pd.DataFrame):
+            if df[col].shape[1] == 1:
+                return df[col].iloc[:, 0]
+            else:
+                # Take first column if multiple
+                return df[col].iloc[:, 0]
+        return df[col]
+    
+    df['Open'] = extract_col('Open')
+    df['High'] = extract_col('High')
+    df['Low'] = extract_col('Low')
+    df['Close'] = extract_col('Close')
+    df['Volume'] = extract_col('Volume')
+    
+    df.index = pd.to_datetime(df.index)
+    df['date'] = df.index.date
+    
+    # Now all columns are Series
+    open_col = df['Open']
+    high_col = df['High']
+    low_col = df['Low']
+    close_col = df['Close']
+    volume_col = df['Volume']
+    
+    # Intraday features (all calculated as Series)
+    df['range_pct'] = (high_col - low_col) / open_col.replace(0, np.nan)
+    df['body_pct'] = (close_col - open_col) / open_col.replace(0, np.nan)
+    
+    # VWAP - compute_vwap now guaranteed to return Series
+    vwap_series = compute_vwap(df)
+    df['vwap_dist'] = (close_col - vwap_series) / vwap_series.replace(0, np.nan)
+    
+    # RSI
+    df['rsi'] = compute_rsi(close_col, 14)
+    
+    # Volume ratio
+    avg_vol = volume_col.rolling(window=20, min_periods=1).mean()
+    df['vol_ratio'] = volume_col / avg_vol.replace(0, np.nan)
+    
+    # Previous bar momentum
+    df['prev_mom'] = close_col.pct_change(1)
+    df['prev_mom_5'] = close_col.pct_change(5)
+    
+    # Gap from day open
+    day_open = open_col.groupby(df['date']).transform('first')
+    df['gap_from_open'] = (close_col - day_open) / day_open.replace(0, np.nan)
+    
+    # Join Nifty context
+    df = df.join(nifty_ctx, how='left')
+    
+    # Forward returns (target)
+    future_close = close_col.shift(-1)
+    forward_ret_series = (future_close - close_col) / close_col.replace(0, np.nan)
+    df['forward_return'] = forward_ret_series
+    
+    # Label (1 if forward return > 0.005, else 0)
+    df['label'] = (df['forward_return'] > 0.005).astype(int)
+    
+    # Drop rows with NaN in critical features
+    feature_cols = [
+        'range_pct', 'body_pct', 'vwap_dist', 'rsi', 'vol_ratio',
+        'prev_mom', 'prev_mom_5', 'gap_from_open',
+        'nifty_gap', 'nifty_morn_ret', 'nifty_rsi',
+        'forward_return', 'label'
+    ]
+    
+    df = df[feature_cols].dropna()
+    
+    return df
 
 
-# ─── Model Training ──────────────────────────────────────────────────────────
-
-def train_model(state_manager) -> bool:
+def train_model(state_manager):
     """
-    Train XGBoost model on recent data
-    
-    Returns:
-        True if successful, False otherwise
+    Train XGBoost model on multiple stocks
+    FIXED: All DataFrame handling issues
     """
-    if not XGB_AVAILABLE:
-        log.error("XGBoost not installed")
-        return False
-    
-    today_str = str(date.today())
-    state = state_manager.load()
-    
-    if state.get('last_train_date') == today_str:
-        log.info("Model already trained today")
-        return True
-    
     log.info("Starting model training...")
     
-    # Download data
-    log.info(f"Downloading {len(DAYTRADE_UNIVERSE)} stocks...")
-    stock_data = download_intraday_data(DAYTRADE_UNIVERSE, DAYTRADE_TRAIN_DAYS + 5)
-    nifty_data = download_nifty_intraday(DAYTRADE_TRAIN_DAYS + 5)
+    # Download Nifty for context
+    log.info("Downloading 14 stocks...")
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=DAYTRADE_TRAIN_DAYS)
     
-    if len(stock_data) < 3:
-        log.error("Too few stocks downloaded - aborting")
+    # Download Nifty
+    nifty_data = download_data(
+        ['^NSEI'],
+        start=start_date.strftime('%Y-%m-%d'),
+        end=end_date.strftime('%Y-%m-%d'),
+        interval=DAYTRADE_INTERVAL
+    )
+    
+    if nifty_data.empty:
+        log.error("Failed to download Nifty data")
         return False
     
     # Build Nifty context
-    nifty_ctx = None
-    if not nifty_data.empty:
-        nifty_ctx = build_nifty_context(nifty_data)
+    nifty_ctx = build_nifty_context(nifty_data)
     
-    # Build training data
-    all_X, all_y = [], []
-    feature_cols = [
-        'returns', 'log_returns', 'volatility', 'atr', 'rsi',
-        'price_sma_ratio', 'volume_ratio', 'vwap_dist',
-        'nifty_gap', 'nifty_morn_ret', 'nifty_rsi'
-    ]
+    # Build features for each stock
+    all_data = []
     
-    for symbol, df in stock_data.items():
+    for symbol in DAYTRADE_STOCKS:
         try:
-            # Stock features
-            stock_feat = build_stock_features(df)
+            # Download stock data
+            stock_data = download_data(
+                [symbol + '.NS'],
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d'),
+                interval=DAYTRADE_INTERVAL
+            )
             
-            # Merge Nifty context
-            if nifty_ctx is not None:
-                for col in ['nifty_gap', 'nifty_morn_ret', 'nifty_rsi']:
-                    stock_feat[col] = nifty_ctx[col].reindex(df.index, method='ffill')
-            else:
-                stock_feat['nifty_gap'] = 0.0
-                stock_feat['nifty_morn_ret'] = 0.0
-                stock_feat['nifty_rsi'] = 50.0
-            
-            # Labels
-            labels = make_labels(df, horizon_bars=4)
-            
-            # Combine
-            stock_feat['label'] = labels
-            stock_feat = stock_feat.dropna(subset=feature_cols + ['label'])
-            
-            if len(stock_feat) < 10:
+            if stock_data.empty:
+                log.warning(f"{symbol}: No data downloaded")
                 continue
             
-            all_X.append(stock_feat[feature_cols])
-            all_y.append(stock_feat['label'].astype(int))
+            # Build features
+            features_df = build_stock_features(stock_data, nifty_ctx)
+            
+            if len(features_df) < 50:
+                log.warning(f"{symbol}: Insufficient data ({len(features_df)} rows)")
+                continue
+            
+            all_data.append(features_df)
+            log.info(f"{symbol}: {len(features_df)} training samples")
             
         except Exception as e:
             log.warning(f"{symbol}: Feature build failed - {e}")
             continue
     
-    if not all_X:
+    if not all_data:
         log.error("No training data built")
         return False
     
-    X = pd.concat(all_X).reset_index(drop=True)
-    y = pd.concat(all_y).reset_index(drop=True)
+    # Combine all stocks
+    df_train = pd.concat(all_data, ignore_index=True)
+    log.info(f"Training data: {len(df_train)} rows from {len(all_data)} stocks")
     
-    log.info(f"Training on {len(X):,} samples, {y.value_counts().to_dict()} class distribution")
+    # Prepare features and target
+    feature_cols = [
+        'range_pct', 'body_pct', 'vwap_dist', 'rsi', 'vol_ratio',
+        'prev_mom', 'prev_mom_5', 'gap_from_open',
+        'nifty_gap', 'nifty_morn_ret', 'nifty_rsi'
+    ]
+    
+    X = df_train[feature_cols]
+    y = df_train['label']
     
     # Train XGBoost
-    try:
-        # Class weights for imbalance
-        class_weights = {0: 2.0, 1: 0.5, 2: 2.0}
-        sample_weights = y.map(class_weights)
-        
-        model = xgb.XGBClassifier(**XGB_PARAMS)
-        model.fit(X, y, sample_weight=sample_weights, verbose=False)
-        
-        # Save model
-        model_path = DAYTRADE_STATE.parent / "daytrade_model.json"
-        model.save_model(str(model_path))
-        
-        # Update state
-        state_manager.update({
-            'model_trained': True,
-            'last_train_date': today_str,
-            'feature_cols': feature_cols,
-            'n_features': len(feature_cols),
-            'training_samples': len(X)
-        })
-        
-        log.info(f"✅ Model trained successfully ({len(X):,} samples)")
-        return True
-        
-    except Exception as e:
-        log.error(f"Model training failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    log.info("Training XGBoost classifier...")
+    
+    model = xgb.XGBClassifier(
+        n_estimators=100,
+        max_depth=6,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        eval_metric='logloss'
+    )
+    
+    model.fit(X, y)
+    
+    # Save model
+    model_path = STATE_DIR / 'daytrade_model.json'
+    model.save_model(str(model_path))
+    log.info(f"Model saved to {model_path}")
+    
+    # Update state
+    state = {
+        'model_status': 'trained',
+        'last_train_time': datetime.now().isoformat(),
+        'train_samples': len(df_train),
+        'train_stocks': len(all_data),
+        'feature_cols': feature_cols
+    }
+    
+    state_manager.save_state('daytrade_state', state)
+    log.info("Model training complete!")
+    
+    return True
