@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime, date
 
+
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -487,16 +488,30 @@ def unknown_command(message):
 # ─── Main Loop ───────────────────────────────────────────────────────────────
 
 def main():
-    """Main bot loop with auto-restart"""
+    """Start Telegram bot"""
     log.info("="*70)
-    log.info("TELEGRAM BOT SERVICE STARTING")
+    log.info("TELEGRAM BOT STARTING")
     log.info("="*70)
     
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log.error("TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set")
-        log.error("Set environment variables:")
-        log.error("  export TELEGRAM_TOKEN='your_token'")
-        log.error("  export TELEGRAM_CHAT_ID='your_chat_id'")
+    # Validate config
+    if not TELEGRAM_TOKEN:
+        log.error("❌ TELEGRAM_TOKEN not set")
+        return 1
+    
+    if not TELEGRAM_CHAT_ID:
+        log.error("❌ TELEGRAM_CHAT_ID not set")
+        return 1
+    
+    log.info(f"✅ Bot configured for chat ID: {TELEGRAM_CHAT_ID}")
+    
+    try:
+        log.info("🤖 Bot polling started...")
+        bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    except KeyboardInterrupt:
+        log.info("Bot stopped by user")
+        return 0
+    except Exception as e:
+        log.error(f"💥 Bot crashed: {e}", exc_info=True)
         return 1
     
     log.info(f"Bot initialized for chat ID: {TELEGRAM_CHAT_ID}")
