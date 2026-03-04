@@ -159,20 +159,3 @@ DAYTRADE_STATE = 'daytrade_state'
 MOMENTUM_STATE = 'momentum_state'
 PORTFOLIO_STATE = 'portfolio'
 SYSTEM_STATE = 'system_state'
-```
-
----
-
-### FILE 3: `requirements.txt`
-**REPLACE ENTIRE FILE**
-```
-pandas>=2.0.0
-numpy>=1.24.0
-yfinance>=0.2.0
-schedule>=1.2.0
-pytz>=2023.3
-streamlit>=1.28.0
-streamlit-autorefresh>=0.0.1
-pyTelegramBotAPI>=4.14.0
-xgboost>=2.0.0
-requests>=2.31.0
