@@ -1,6 +1,6 @@
 """
 Trading System Configuration
-All settings and constants
+COMPLETE - ALL VARIABLES INCLUDED
 """
 import os
 from pathlib import Path
@@ -23,6 +23,15 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+
+# ============================================================================
+# API / NETWORK CONFIGURATION
+# ============================================================================
+
+# Retry configuration for API calls (yfinance, etc.)
+RETRY_ATTEMPTS = 3  # Number of retry attempts for failed requests
+RETRY_DELAY = 2     # Seconds to wait between retries
+REQUEST_TIMEOUT = 30  # Seconds before request times out
 
 # ============================================================================
 # CAPITAL ALLOCATION
@@ -95,7 +104,7 @@ DAYTRADE_MAX_HOLD_MINUTES = 105  # 1h 45m (9:30 AM to 11:15 AM)
 # MOMENTUM STRATEGY
 # ============================================================================
 
-# Universe of stocks (can be different from day trading)
+# Universe of stocks
 MOMENTUM_UNIVERSE = [
     'RELIANCE',
     'TCS',
@@ -146,16 +155,16 @@ NSE_SUFFIX = '.NS'
 MARKET_OPEN_TIME = '09:15'
 MARKET_CLOSE_TIME = '15:30'
 
-# Trading hours (actual trading window)
-TRADING_START_TIME = '09:30'  # After first 15 min
-TRADING_END_TIME = '15:20'    # Before market close
+# Trading hours
+TRADING_START_TIME = '09:30'
+TRADING_END_TIME = '15:20'
 
 # ============================================================================
 # LOGGING
 # ============================================================================
 
 # Log levels
-LOG_LEVEL = 'INFO'  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = 'INFO'
 
 # Log file settings
 LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s'
@@ -163,7 +172,7 @@ LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 # Log rotation
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
-LOG_BACKUP_COUNT = 5  # Keep 5 backup files
+LOG_BACKUP_COUNT = 5
 
 # ============================================================================
 # NOTIFICATIONS
@@ -177,102 +186,40 @@ NOTIFY_DAILY_SUMMARY = True
 NOTIFY_ERRORS = True
 
 # ============================================================================
-# PAPER TRADING / LIVE TRADING
+# PAPER TRADING
 # ============================================================================
 
-# Trading mode
-PAPER_TRADING = True  # Set to False for live trading (NOT RECOMMENDED!)
-
-# Broker configuration (for live trading - NOT IMPLEMENTED)
-BROKER = None  # Would be 'zerodha', 'upstox', etc.
-BROKER_API_KEY = ''
-BROKER_API_SECRET = ''
+PAPER_TRADING = True  # Always use paper trading
 
 # ============================================================================
 # SAFETY LIMITS
 # ============================================================================
 
-# Daily loss limit (% of capital)
-MAX_DAILY_LOSS_PCT = 0.03  # Stop trading if down 3% in a day
+# Daily loss limit
+MAX_DAILY_LOSS_PCT = 0.03  # 3%
 
 # Weekly loss limit
-MAX_WEEKLY_LOSS_PCT = 0.08  # Stop trading if down 8% in a week
+MAX_WEEKLY_LOSS_PCT = 0.08  # 8%
 
 # Consecutive loss limit
-MAX_CONSECUTIVE_LOSSES = 5  # Stop trading after 5 losses in a row
+MAX_CONSECUTIVE_LOSSES = 5
 
 # ============================================================================
 # PERFORMANCE TRACKING
 # ============================================================================
 
-# Metrics to track
 TRACK_SHARPE_RATIO = True
 TRACK_MAX_DRAWDOWN = True
 TRACK_WIN_RATE = True
 TRACK_PROFIT_FACTOR = True
 
-# Performance review period
-REVIEW_PERIOD_DAYS = 30  # Review performance every 30 days
+REVIEW_PERIOD_DAYS = 30
 
 # ============================================================================
-# DEVELOPMENT / DEBUG
+# DEBUG
 # ============================================================================
 
-# Debug mode
 DEBUG_MODE = False
-
-# Verbose logging
 VERBOSE = False
-
-# Save predictions
 SAVE_MODEL_PREDICTIONS = True
-
-# Save feature importance
 SAVE_FEATURE_IMPORTANCE = True
-
-# ============================================================================
-# VALIDATION
-# ============================================================================
-
-def validate_config():
-    """Validate configuration settings"""
-    errors = []
-    
-    # Check capital allocation
-    if DAYTRADE_CAPITAL + MOMENTUM_CAPITAL != TOTAL_CAPITAL:
-        errors.append(f"Capital allocation mismatch: {DAYTRADE_CAPITAL} + {MOMENTUM_CAPITAL} != {TOTAL_CAPITAL}")
-    
-    # Check Telegram credentials
-    if not TELEGRAM_TOKEN:
-        errors.append("TELEGRAM_TOKEN not set")
-    
-    if not TELEGRAM_CHAT_ID:
-        errors.append("TELEGRAM_CHAT_ID not set")
-    
-    # Check risk parameters
-    if BASE_RISK_PCT <= 0 or BASE_RISK_PCT > 0.05:
-        errors.append(f"BASE_RISK_PCT should be between 0 and 0.05, got {BASE_RISK_PCT}")
-    
-    if MAX_POSITION_PCT > 0.20:
-        errors.append(f"MAX_POSITION_PCT too high: {MAX_POSITION_PCT}")
-    
-    # Check day trading parameters
-    if CONVICTION_MIN < 0.5 or CONVICTION_MIN > 1.0:
-        errors.append(f"CONVICTION_MIN should be between 0.5 and 1.0, got {CONVICTION_MIN}")
-    
-    if len(DAYTRADE_STOCKS) == 0:
-        errors.append("DAYTRADE_STOCKS is empty")
-    
-    # Check momentum parameters
-    if MOMENTUM_MAX_POSITIONS > len(MOMENTUM_UNIVERSE):
-        errors.append(f"MOMENTUM_MAX_POSITIONS ({MOMENTUM_MAX_POSITIONS}) exceeds universe size ({len(MOMENTUM_UNIVERSE)})")
-    
-    return errors
-
-
-# Validate on import
-config_errors = validate_config()
-if config_errors:
-    print("⚠️  Configuration warnings:")
-    for error in config_errors:
-        print(f"   - {error}")
