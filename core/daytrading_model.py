@@ -249,7 +249,7 @@ def train_model(state_manager):
         'feature_cols': feature_cols
     }
     
-    state_manager.save_state(state)
+    state_manager.save(state)
     log.info("Model training complete!")
     
     return True
