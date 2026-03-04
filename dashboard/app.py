@@ -7,6 +7,16 @@ import json
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import os
+
+# Health check endpoint for Render
+if __name__ == "__main__":
+    # Check if running as health check
+    if len(os.sys.argv) > 1 and os.sys.argv[1] == "health":
+        print("OK")
+        os.sys.exit(0)
+
+# Your existing dashboard code continues below...
 
 st.set_page_config(page_title="Trading System", layout="wide")
 
