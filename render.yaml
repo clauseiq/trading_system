@@ -1,42 +1,15 @@
 services:
-  # Main scheduler - runs trading jobs
-  - type: worker
-    name: trading-scheduler
-    env: python
-    region: singapore
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python3 railway/scheduler.py
-    envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-  
-  # Telegram bot - monitoring and commands
-  - type: worker
-    name: telegram-bot
-    env: python
-    region: singapore
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python3 services/telegram_bot.py
-    envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
-  
-  # Optional: Dashboard web service
+  # Dashboard web service
   - type: web
     name: trading-dashboard
     env: python
     region: singapore
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run dashboard/app.py --server.port=$PORT --server.address=0.0.0.0
+    startCommand: streamlit run dashboard/app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+    healthCheckPath: /healthz
