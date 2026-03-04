@@ -1,4 +1,4 @@
-name: Automated Trading System
+name: Automated Trading System (Day + Momentum)
 
 on:
   # Schedule: 9:00 AM IST = 3:30 AM UTC (Mon-Fri)
@@ -11,7 +11,7 @@ on:
 jobs:
   trading:
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # 3 hours max
+    timeout-minutes: 240  # 4 hours max
     
     steps:
       - name: Checkout code
@@ -33,64 +33,124 @@ jobs:
           mkdir -p storage/state
           mkdir -p storage/logs
       
-      - name: Train Model
+      # ============================================================
+      # 9:00 AM IST - Train Day Trade Model
+      # ============================================================
+      - name: 🤖 Train Day Trade Model (9:00 AM IST)
         id: train
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "🤖 Training model..."
+          echo "🤖 Training XGBoost model..."
           python engine/train_daytrade_model.py || echo "::warning::Model training failed"
         continue-on-error: true
       
-      - name: Wait for market (29 minutes)
+      # ============================================================
+      # 9:20 AM IST - Momentum Morning + Rebalance Check
+      # ============================================================
+      - name: Wait 20 minutes (9:00 → 9:20 AM)
         if: steps.train.outcome == 'success'
         run: |
-          echo "⏰ Waiting 29 minutes for market stabilization..."
-          sleep 1740
+          echo "⏰ Waiting 20 minutes..."
+          sleep 1200
       
-      - name: Generate Signals
-        id: signals
-        if: steps.train.outcome == 'success'
+      - name: 📊 Momentum Rebalance (if due)
+        id: momentum_rebalance
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "📈 Generating signals..."
+          echo "📊 Checking momentum rebalance..."
+          python engine/momentum_rebalance.py || echo "::warning::Momentum rebalance failed"
+        continue-on-error: true
+      
+      - name: 🔍 Momentum Morning Check
+        id: momentum_morning
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "🔍 Checking momentum stops/targets..."
+          python engine/momentum_morning.py || echo "::warning::Momentum morning check failed"
+        continue-on-error: true
+      
+      # ============================================================
+      # 9:29 AM IST - Generate Day Trade Signals
+      # ============================================================
+      - name: Wait 9 minutes (9:20 → 9:29 AM)
+        if: steps.train.outcome == 'success'
+        run: |
+          echo "⏰ Waiting 9 minutes..."
+          sleep 540
+      
+      - name: 📈 Generate Day Trade Signals
+        id: signals
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "📈 Generating day trade signals..."
           python engine/generate_daytrade_signals.py || echo "::warning::Signal generation failed"
         continue-on-error: true
       
-      - name: Wait 1 minute
+      # ============================================================
+      # 9:30 AM IST - Execute Day Trades
+      # ============================================================
+      - name: Wait 1 minute (9:29 → 9:30 AM)
         if: steps.signals.outcome == 'success'
         run: sleep 60
       
-      - name: Execute Trades
+      - name: 💰 Execute Day Trades
         id: execute
-        if: steps.signals.outcome == 'success'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "💰 Executing trades..."
+          echo "💰 Executing day trades..."
           python engine/execute_daytrade.py || echo "::warning::Trade execution failed"
         continue-on-error: true
       
-      - name: Wait 1h 45m
+      # ============================================================
+      # 11:15 AM IST - Close Day Trade Positions
+      # ============================================================
+      - name: Wait 1h 45m (9:30 → 11:15 AM)
         if: steps.execute.outcome == 'success'
         run: |
-          echo "⏰ Holding positions..."
+          echo "⏰ Holding day trade positions..."
           sleep 6300
       
-      - name: Close Positions
+      - name: 🏁 Close Day Trade Positions
+        id: close_day
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "🏁 Closing positions..."
+          echo "🏁 Closing day trade positions..."
           python engine/close_daytrade.py || echo "::warning::Position close failed"
         continue-on-error: true
       
-      - name: Save Results
+      # ============================================================
+      # 3:20 PM IST - Momentum EOD Update
+      # ============================================================
+      - name: Wait until 3:20 PM (11:15 AM → 3:20 PM)
+        run: |
+          echo "⏰ Waiting until 3:20 PM IST for momentum EOD..."
+          sleep 14700  # 4h 5m
+      
+      - name: 📉 Momentum EOD Update (3:20 PM IST)
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "📉 Updating momentum trailing stops..."
+          python engine/momentum_eod.py || echo "::warning::Momentum EOD failed"
+        continue-on-error: true
+      
+      # ============================================================
+      # Save Results
+      # ============================================================
+      - name: 💾 Save Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -100,10 +160,21 @@ jobs:
             storage/logs/
           retention-days: 30
       
-      - name: Summary
+      - name: 📊 Workflow Summary
         if: always()
         run: |
-          echo "📊 Workflow completed at $(date)"
-          echo "Train: ${{ steps.train.outcome }}"
-          echo "Signals: ${{ steps.signals.outcome }}"
-          echo "Execute: ${{ steps.execute.outcome }}"
+          echo "================================"
+          echo "WORKFLOW COMPLETED"
+          echo "================================"
+          echo "Date: $(date)"
+          echo ""
+          echo "Day Trading:"
+          echo "  Train Model: ${{ steps.train.outcome }}"
+          echo "  Generate Signals: ${{ steps.signals.outcome }}"
+          echo "  Execute Trades: ${{ steps.execute.outcome }}"
+          echo "  Close Positions: ${{ steps.close_day.outcome }}"
+          echo ""
+          echo "Momentum Trading:"
+          echo "  Rebalance: ${{ steps.momentum_rebalance.outcome }}"
+          echo "  Morning Check: ${{ steps.momentum_morning.outcome }}"
+          echo "================================"
