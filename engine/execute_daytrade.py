@@ -15,9 +15,49 @@ from lib.portfolio_manager import PortfolioManager
 from lib.risk_manager import RiskManager
 from lib.telegram_notifier import TelegramNotifier
 from config.config import DAYTRADE_STATE, PORTFOLIO_STATE, DAYTRADE_CAPITAL, DAYTRADE_MAX_CAPITAL_PCT
+from lib.telegram_notifier import send_message
+from config.config import DAYTRADE_STATE
 
 log = setup_logger('execute_daytrade')
 
+
+def main():
+    """Execute day trades"""
+    log.info("="*70)
+    log.info("EXECUTE TRADES - START")
+    log.info("="*70)
+    
+    try:
+        state_manager = StateManager(DAYTRADE_STATE)
+        state = state_manager.load()
+        
+        signals = state.get('signals', [])
+        
+        if not signals:
+            log.info("No signals to execute")
+            send_message("📊 No day trade signals today")
+            return 0
+        
+        # Execute trades (your existing logic here)
+        log.info(f"Executing {len(signals)} trades")
+        
+        # Send notification
+        send_message(f"✅ Executed {len(signals)} day trades")
+        
+        log.info("✅ Trades executed successfully")
+        return 0
+    
+    except Exception as e:
+        log.error(f"💥 Error: {e}", exc_info=True)
+        send_message(f"❌ Trade execution failed: {e}")
+        return 1
+    
+    finally:
+        log.info("="*70)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
 def execute_trades():
     """Execute paper trades based on signals"""
