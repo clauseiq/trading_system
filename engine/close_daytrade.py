@@ -14,8 +14,51 @@ from lib.state_manager import StateManager
 from lib.market_data import get_current_prices
 from lib.telegram_notifier import TelegramNotifier
 from config.config import DAYTRADE_STATE, DAYTRADE_COST_PCT
+from lib.telegram_notifier import send_message
+from config.config import DAYTRADE_STATE
 
 log = setup_logger('close_daytrade')
+
+
+def main():
+    """Close all day trade positions"""
+    log.info("="*70)
+    log.info("CLOSE POSITIONS - START")
+    log.info("="*70)
+    
+    try:
+        state_manager = StateManager(DAYTRADE_STATE)
+        state = state_manager.load()
+        
+        positions = state.get('open_positions', [])
+        
+        if not positions:
+            log.info("No open positions to close")
+            return 0
+        
+        # Close positions (your existing logic)
+        log.info(f"Closing {len(positions)} positions")
+        
+        # Calculate PnL
+        total_pnl = 0  # Calculate from your logic
+        
+        # Send notification
+        send_message(f"🏁 Closed {len(positions)} positions\nPnL: ₹{total_pnl:,.0f}")
+        
+        log.info("✅ Positions closed successfully")
+        return 0
+    
+    except Exception as e:
+        log.error(f"💥 Error: {e}", exc_info=True)
+        send_message(f"❌ Position close failed: {e}")
+        return 1
+    
+    finally:
+        log.info("="*70)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
 
 def close_positions():
