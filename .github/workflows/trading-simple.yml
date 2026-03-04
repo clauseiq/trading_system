@@ -1,110 +1,109 @@
-# Simplified Trading Bot - All Jobs in One Workflow
-# Easier to manage, runs complete trading cycle
-
-name: Daily Trading Bot
+name: Automated Trading System
 
 on:
-  # Run once at 9:00 AM IST (3:30 AM UTC) - handles all jobs
+  # Schedule: 9:00 AM IST = 3:30 AM UTC (Mon-Fri)
   schedule:
-    - cron: '30 3 * * 1-5'  # Monday-Friday at 9:00 AM IST
+    - cron: '30 3 * * 1-5'
   
-  # Manual trigger for testing
+  # Manual trigger
   workflow_dispatch:
 
 jobs:
-  run-trading-system:
+  trading:
     runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3 hours max
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Setup Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
-    
-    - name: Install dependencies
-      run: |
-        pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: Create storage directories
-      run: |
-        mkdir -p storage/state
-        mkdir -p storage/logs
-    
-    - name: 📊 Step 1 - Train Model (9:00 AM IST)
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: |
-        echo "🤖 Training XGBoost model..."
-        python engine/train_daytrade_model.py
-        echo "✅ Model training complete"
-    
-    - name: ⏰ Wait 29 minutes (until 9:29 AM)
-      run: |
-        echo "⏰ Waiting for market to stabilize..."
-        sleep 1740  # 29 minutes
-    
-    - name: 📈 Step 2 - Generate Signals (9:29 AM IST)
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: |
-        echo "🔍 Generating trade signals..."
-        python engine/generate_daytrade_signals.py
-        echo "✅ Signals generated"
-    
-    - name: ⏰ Wait 1 minute (until 9:30 AM)
-      run: |
-        echo "⏰ Waiting for 9:30 AM..."
-        sleep 60
-    
-    - name: 💰 Step 3 - Execute Trades (9:30 AM IST)
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: |
-        echo "🚀 Executing trades..."
-        python engine/execute_daytrade.py
-        echo "✅ Trades executed (Telegram notification sent)"
-    
-    - name: ⏰ Wait 1 hour 45 minutes (until 11:15 AM)
-      run: |
-        echo "⏰ Holding positions until 11:15 AM..."
-        sleep 6300  # 1h 45m
-    
-    - name: 🏁 Step 4 - Close Positions (11:15 AM IST)
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: |
-        echo "🏁 Closing all positions..."
-        python engine/close_daytrade.py
-        echo "✅ Positions closed (Results sent to Telegram)"
-    
-    - name: 💾 Save trading results
-      uses: actions/upload-artifact@v4
-      with:
-        name: trading-results-${{ github.run_number }}
-        path: |
-          storage/state/
-          storage/logs/
-        retention-days: 30
-    
-    - name: 📊 Generate daily report
-      run: |
-        echo "📊 Daily Trading Report" > report.txt
-        echo "Date: $(date +'%Y-%m-%d')" >> report.txt
-        echo "Workflow: ${{ github.run_number }}" >> report.txt
-        echo "Status: Complete ✅" >> report.txt
-        cat report.txt
-    
-    - name: 🎉 Workflow complete
-      run: |
-        echo "✅ Trading cycle complete!"
-        echo "📱 Check Telegram for results"
-        echo "📊 View artifacts for detailed logs"
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Create storage directories
+        run: |
+          mkdir -p storage/state
+          mkdir -p storage/logs
+      
+      - name: Train Model
+        id: train
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "🤖 Training model..."
+          python engine/train_daytrade_model.py || echo "::warning::Model training failed"
+        continue-on-error: true
+      
+      - name: Wait for market (29 minutes)
+        if: steps.train.outcome == 'success'
+        run: |
+          echo "⏰ Waiting 29 minutes for market stabilization..."
+          sleep 1740
+      
+      - name: Generate Signals
+        id: signals
+        if: steps.train.outcome == 'success'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "📈 Generating signals..."
+          python engine/generate_daytrade_signals.py || echo "::warning::Signal generation failed"
+        continue-on-error: true
+      
+      - name: Wait 1 minute
+        if: steps.signals.outcome == 'success'
+        run: sleep 60
+      
+      - name: Execute Trades
+        id: execute
+        if: steps.signals.outcome == 'success'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "💰 Executing trades..."
+          python engine/execute_daytrade.py || echo "::warning::Trade execution failed"
+        continue-on-error: true
+      
+      - name: Wait 1h 45m
+        if: steps.execute.outcome == 'success'
+        run: |
+          echo "⏰ Holding positions..."
+          sleep 6300
+      
+      - name: Close Positions
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "🏁 Closing positions..."
+          python engine/close_daytrade.py || echo "::warning::Position close failed"
+        continue-on-error: true
+      
+      - name: Save Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-results-${{ github.run_number }}
+          path: |
+            storage/state/
+            storage/logs/
+          retention-days: 30
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "📊 Workflow completed at $(date)"
+          echo "Train: ${{ steps.train.outcome }}"
+          echo "Signals: ${{ steps.signals.outcome }}"
+          echo "Execute: ${{ steps.execute.outcome }}"
