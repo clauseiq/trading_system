@@ -223,3 +223,13 @@ DEBUG_MODE = False
 VERBOSE = False
 SAVE_MODEL_PREDICTIONS = True
 SAVE_FEATURE_IMPORTANCE = True
+
+# ============================================================================
+# STATE FILE NAMES
+# ============================================================================
+
+# State file identifiers for StateManager
+DAYTRADE_STATE = 'daytrade_state'
+MOMENTUM_STATE = 'momentum_state'
+PORTFOLIO_STATE = 'portfolio'
+SYSTEM_STATE = 'system_state'
