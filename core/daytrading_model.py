@@ -1,15 +1,14 @@
 """
 Day Trading Model - XGBoost Intraday Strategy
-FIXED: All DataFrame multi-column assignment issues
+FIXED: Correct function calls for market data
 """
 import pandas as pd
 import numpy as np
 import xgboost as xgb
 from datetime import datetime, timedelta
-import json
 from pathlib import Path
 
-from lib.market_data import download_data
+from lib.market_data import download_intraday_data, download_nifty_intraday
 from lib.logger import setup_logger
 from config.config import (
     DAYTRADE_STOCKS,
@@ -27,7 +26,6 @@ def compute_rsi(series, period=14):
     if len(series) < period + 1:
         return pd.Series(np.nan, index=series.index)
     
-    # Ensure we have a Series
     if isinstance(series, pd.DataFrame):
         series = series.squeeze()
     
@@ -42,14 +40,9 @@ def compute_rsi(series, period=14):
 
 def compute_vwap(df):
     """Compute VWAP - returns Series"""
-    # Extract Series from potentially multi-column DataFrames
     def extract_series(col):
         if isinstance(col, pd.DataFrame):
-            if col.shape[1] == 1:
-                return col.iloc[:, 0]
-            else:
-                # If multiple columns, take the first one
-                return col.iloc[:, 0]
+            return col.iloc[:, 0] if col.shape[1] == 1 else col.iloc[:, 0]
         return col
     
     close = extract_series(df['Close'])
@@ -63,23 +56,15 @@ def compute_vwap(df):
 
 
 def build_nifty_context(nifty_df):
-    """
-    Build 3 Nifty context features
-    FIXED: Handle multi-column DataFrame from yfinance properly
-    """
+    """Build 3 Nifty context features"""
     df = nifty_df.copy()
     
-    # Handle multi-level columns from yfinance
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     
-    # Extract single columns if needed
     def extract_col(col):
         if isinstance(df[col], pd.DataFrame):
-            if df[col].shape[1] == 1:
-                return df[col].iloc[:, 0]
-            else:
-                return df[col].iloc[:, 0]
+            return df[col].iloc[:, 0] if df[col].shape[1] == 1 else df[col].iloc[:, 0]
         return df[col]
     
     df['Close'] = extract_col('Close')
@@ -88,46 +73,33 @@ def build_nifty_context(nifty_df):
     df.index = pd.to_datetime(df.index)
     df['date'] = df.index.date
     
-    # Now work with Series
     close_series = df['Close']
     open_series = df['Open']
     
-    # Gap - calculate with Series
     prev_close = close_series.groupby(df['date']).transform('last').shift(1)
     day_open = open_series.groupby(df['date']).transform('first')
     
     gap_series = (day_open - prev_close) / prev_close.replace(0, np.nan)
     df['nifty_gap'] = gap_series
     
-    # Morning return
     morn_ret_series = (close_series - day_open) / day_open.replace(0, np.nan)
     df['nifty_morn_ret'] = morn_ret_series
     
-    # RSI
     df['nifty_rsi'] = compute_rsi(close_series, 14)
     
     return df[['nifty_gap', 'nifty_morn_ret', 'nifty_rsi']]
 
 
 def build_stock_features(stock_df, nifty_ctx):
-    """
-    Build features for one stock
-    FIXED: Handle all multi-column DataFrame assignments
-    """
+    """Build features for one stock"""
     df = stock_df.copy()
     
-    # Handle multi-level columns from yfinance
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     
-    # Extract all columns as Series (handle multi-column DataFrames)
     def extract_col(col):
         if isinstance(df[col], pd.DataFrame):
-            if df[col].shape[1] == 1:
-                return df[col].iloc[:, 0]
-            else:
-                # Take first column if multiple
-                return df[col].iloc[:, 0]
+            return df[col].iloc[:, 0] if df[col].shape[1] == 1 else df[col].iloc[:, 0]
         return df[col]
     
     df['Open'] = extract_col('Open')
@@ -139,48 +111,37 @@ def build_stock_features(stock_df, nifty_ctx):
     df.index = pd.to_datetime(df.index)
     df['date'] = df.index.date
     
-    # Now all columns are Series
     open_col = df['Open']
     high_col = df['High']
     low_col = df['Low']
     close_col = df['Close']
     volume_col = df['Volume']
     
-    # Intraday features (all calculated as Series)
     df['range_pct'] = (high_col - low_col) / open_col.replace(0, np.nan)
     df['body_pct'] = (close_col - open_col) / open_col.replace(0, np.nan)
     
-    # VWAP - compute_vwap now guaranteed to return Series
     vwap_series = compute_vwap(df)
     df['vwap_dist'] = (close_col - vwap_series) / vwap_series.replace(0, np.nan)
     
-    # RSI
     df['rsi'] = compute_rsi(close_col, 14)
     
-    # Volume ratio
     avg_vol = volume_col.rolling(window=20, min_periods=1).mean()
     df['vol_ratio'] = volume_col / avg_vol.replace(0, np.nan)
     
-    # Previous bar momentum
     df['prev_mom'] = close_col.pct_change(1)
     df['prev_mom_5'] = close_col.pct_change(5)
     
-    # Gap from day open
     day_open = open_col.groupby(df['date']).transform('first')
     df['gap_from_open'] = (close_col - day_open) / day_open.replace(0, np.nan)
     
-    # Join Nifty context
     df = df.join(nifty_ctx, how='left')
     
-    # Forward returns (target)
     future_close = close_col.shift(-1)
     forward_ret_series = (future_close - close_col) / close_col.replace(0, np.nan)
     df['forward_return'] = forward_ret_series
     
-    # Label (1 if forward return > 0.005, else 0)
     df['label'] = (df['forward_return'] > 0.005).astype(int)
     
-    # Drop rows with NaN in critical features
     feature_cols = [
         'range_pct', 'body_pct', 'vwap_dist', 'rsi', 'vol_ratio',
         'prev_mom', 'prev_mom_5', 'gap_from_open',
@@ -194,22 +155,14 @@ def build_stock_features(stock_df, nifty_ctx):
 
 
 def train_model(state_manager):
-    """
-    Train XGBoost model on multiple stocks
-    FIXED: All DataFrame handling issues
-    """
+    """Train XGBoost model on multiple stocks"""
     log.info("Starting model training...")
     
-    # Download Nifty for context
     log.info("Downloading 14 stocks...")
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=DAYTRADE_TRAIN_DAYS)
     
-    # Download Nifty
-    nifty_data = download_data(
-        ['^NSEI'],
-        start=start_date.strftime('%Y-%m-%d'),
-        end=end_date.strftime('%Y-%m-%d'),
+    # Download Nifty intraday data
+    nifty_data = download_nifty_intraday(
+        days_back=DAYTRADE_TRAIN_DAYS,
         interval=DAYTRADE_INTERVAL
     )
     
@@ -220,24 +173,22 @@ def train_model(state_manager):
     # Build Nifty context
     nifty_ctx = build_nifty_context(nifty_data)
     
+    # Download stock data
+    stock_data_dict = download_intraday_data(
+        symbols=DAYTRADE_STOCKS,
+        days_back=DAYTRADE_TRAIN_DAYS,
+        interval=DAYTRADE_INTERVAL
+    )
+    
+    if not stock_data_dict:
+        log.error("Failed to download any stock data")
+        return False
+    
     # Build features for each stock
     all_data = []
     
-    for symbol in DAYTRADE_STOCKS:
+    for symbol, stock_data in stock_data_dict.items():
         try:
-            # Download stock data
-            stock_data = download_data(
-                [symbol + '.NS'],
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d'),
-                interval=DAYTRADE_INTERVAL
-            )
-            
-            if stock_data.empty:
-                log.warning(f"{symbol}: No data downloaded")
-                continue
-            
-            # Build features
             features_df = build_stock_features(stock_data, nifty_ctx)
             
             if len(features_df) < 50:
@@ -298,7 +249,7 @@ def train_model(state_manager):
         'feature_cols': feature_cols
     }
     
-    state_manager.save_state('daytrade_state', state)
+    state_manager.save_state(state)
     log.info("Model training complete!")
     
     return True
