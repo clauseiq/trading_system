@@ -54,7 +54,27 @@ def compute_vwap(df):
     vwap = (typical_price * volume).cumsum() / volume.cumsum()
     return vwap
 
-
+def compute_atr(df, period=14):
+    """Compute Average True Range"""
+    def extract_series(col):
+        if isinstance(col, pd.DataFrame):
+            return col.iloc[:, 0] if col.shape[1] == 1 else col.iloc[:, 0]
+        return col
+    
+    high = extract_series(df['High'])
+    low = extract_series(df['Low'])
+    close = extract_series(df['Close'])
+    
+    # True Range calculation
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    
+    return atr
+    
 def build_nifty_context(nifty_df):
     """Build 3 Nifty context features"""
     df = nifty_df.copy()
