@@ -2,6 +2,7 @@
 """
 Momentum Rebalance - Select and Enter Top Momentum Stocks
 Schedule: Every 14 days at 09:20 IST
+FIXED: Use correct download_daily_data function
 """
 import sys
 from pathlib import Path
@@ -12,7 +13,7 @@ import pandas as pd
 import numpy as np
 from lib.logger import setup_logger
 from lib.state_manager import StateManager
-from lib.market_data import download_data, get_current_prices
+from lib.market_data import download_daily_data, get_current_prices
 from lib.telegram_notifier import send_message
 from config.config import (
     MOMENTUM_STATE, MOMENTUM_UNIVERSE, MOMENTUM_MAX_POSITIONS,
@@ -27,54 +28,49 @@ def calculate_momentum_scores():
     """Calculate 14-day momentum for all stocks"""
     log.info(f"Calculating momentum for {len(MOMENTUM_UNIVERSE)} stocks...")
     
-    end_date = date.today()
-    start_date = end_date - timedelta(days=MOMENTUM_LOOKBACK_DAYS + 10)
+    # Download all stocks at once (more efficient)
+    stock_data = download_daily_data(
+        symbols=MOMENTUM_UNIVERSE,
+        period='3mo'  # 3 months of daily data
+    )
+    
+    if not stock_data:
+        log.error("Failed to download any stock data")
+        return {}
     
     scores = {}
     
-    for symbol in MOMENTUM_UNIVERSE:
+    for symbol, df in stock_data.items():
         try:
-            # Download data
-            df = download_data(
-                [symbol + '.NS'],
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d'),
-                interval='1d'
-            )
-            
-            if df.empty or len(df) < MOMENTUM_LOOKBACK_DAYS:
+            if df.empty or len(df) < MOMENTUM_LOOKBACK_DAYS + 5:
                 log.warning(f"{symbol}: Insufficient data")
                 continue
             
-            # Extract Close price
-            if isinstance(df['Close'], pd.DataFrame):
-                close = df['Close'].iloc[:, 0]
-            else:
-                close = df['Close']
-            
             # Calculate momentum (% return over lookback period)
-            momentum = ((close.iloc[-1] - close.iloc[-MOMENTUM_LOOKBACK_DAYS]) / 
-                       close.iloc[-MOMENTUM_LOOKBACK_DAYS]) * 100
+            close = df['Close'].iloc[-1]
+            close_14d_ago = df['Close'].iloc[-(MOMENTUM_LOOKBACK_DAYS + 1)]
+            
+            momentum = ((close - close_14d_ago) / close_14d_ago) * 100
             
             # Calculate ATR for stop loss
-            high = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
-            low = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
+            high = df['High']
+            low = df['Low']
+            close_series = df['Close']
             
-            tr = pd.DataFrame({
-                'hl': high - low,
-                'hc': abs(high - close.shift(1)),
-                'lc': abs(low - close.shift(1))
-            }).max(axis=1)
+            tr1 = high - low
+            tr2 = abs(high - close_series.shift(1))
+            tr3 = abs(low - close_series.shift(1))
             
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr = tr.tail(MOMENTUM_ATR_PERIOD).mean()
             
             scores[symbol] = {
                 'momentum': momentum,
-                'current_price': close.iloc[-1],
+                'current_price': close,
                 'atr': atr
             }
             
-            log.info(f"{symbol}: Momentum={momentum:.2f}%, Price=₹{close.iloc[-1]:.2f}, ATR=₹{atr:.2f}")
+            log.info(f"{symbol}: Momentum={momentum:.2f}%, Price=₹{close:.2f}, ATR=₹{atr:.2f}")
         
         except Exception as e:
             log.error(f"{symbol}: Error - {e}")
@@ -180,7 +176,9 @@ def close_existing_positions(state_manager):
     if closed_summary:
         msg = f"📊 <b>MOMENTUM REBALANCE</b>\n\n"
         msg += f"<b>Closed Positions ({len(closed_summary)}):</b>\n"
-        msg += "\n".join(closed_summary)
+        msg += "\n".join(closed_summary[:10])  # Limit to 10 lines
+        if len(closed_summary) > 10:
+            msg += f"\n... and {len(closed_summary) - 10} more"
         msg += f"\n\n<b>Total PnL:</b> ₹{total_pnl:+,.0f}"
         send_message(msg)
 
@@ -214,7 +212,7 @@ def enter_new_positions(positions, state_manager):
     
     # Send notification
     msg = f"🚀 <b>NEW MOMENTUM POSITIONS</b>\n\n"
-    msg += "\n\n".join(entry_summary)
+    msg += "\n\n".join(entry_summary[:6])  # Limit to 6 positions
     msg += f"\n\n<b>Total Invested:</b> ₹{total_invested:,.0f}"
     send_message(msg)
     
@@ -253,7 +251,7 @@ def main():
         return 0
     
     try:
-        state_manager = StateManager(MOMENTUM_STATE)
+        state_manager = StateManager(STATE_DIR / f'{MOMENTUM_STATE}.json')
         
         # Check if rebalancing is due
         if not should_rebalance(state_manager):
