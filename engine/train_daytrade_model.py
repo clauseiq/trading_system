@@ -12,7 +12,7 @@ from datetime import date
 from lib.logger import setup_logger
 from lib.state_manager import StateManager
 from core.daytrading_model import train_model
-from config.config import DAYTRADE_STATE
+from config.config import DAYTRADE_STATE, STATE_DIR  # ✅ Import STATE_DIR
 
 log = setup_logger('train_daytrade')
 
@@ -33,7 +33,8 @@ def main():
         return 0
     
     try:
-        state_manager = StateManager(DAYTRADE_STATE)
+        # ✅ FIXED: Use correct path
+        state_manager = StateManager(STATE_DIR / f'{DAYTRADE_STATE}.json')
         success = train_model(state_manager)
         
         if success:
