@@ -39,7 +39,8 @@ REQUEST_TIMEOUT = 30
 TOTAL_CAPITAL = 2000000
 DAYTRADE_CAPITAL = 1000000
 MOMENTUM_CAPITAL = 1000000
-DAYTRADE_MAX_CAPITAL_PCT = 1.0  # ✅ ADD THIS - Use 100% of day trade capital
+DAYTRADE_MAX_CAPITAL_PCT = 1.0  #  ADD THIS - Use 100% of day trade capital
+PORTFOLIO_STATE = 'portfolio'  #  ADDED - For compatibility
 
 # ============================================================================
 # RISK MANAGEMENT
