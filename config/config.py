@@ -1,6 +1,6 @@
 """
 Trading System Configuration
-NIFTY 100 & NIFTY 200 Universe
+NIFTY 100 & NIFTY 200 Universe - COMPLETE
 """
 import os
 from pathlib import Path
@@ -39,8 +39,8 @@ REQUEST_TIMEOUT = 30
 TOTAL_CAPITAL = 2000000
 DAYTRADE_CAPITAL = 1000000
 MOMENTUM_CAPITAL = 1000000
-DAYTRADE_MAX_CAPITAL_PCT = 1.0  #  ADD THIS - Use 100% of day trade capital
-PORTFOLIO_STATE = 'portfolio'  #  ADDED - For compatibility
+DAYTRADE_MAX_CAPITAL_PCT = 1.0
+PORTFOLIO_STATE = 'portfolio'
 
 # ============================================================================
 # RISK MANAGEMENT
@@ -217,5 +217,4 @@ SAVE_FEATURE_IMPORTANCE = True
 
 DAYTRADE_STATE = 'daytrade_state'
 MOMENTUM_STATE = 'momentum_state'
-PORTFOLIO_STATE = 'portfolio'
 SYSTEM_STATE = 'system_state'
