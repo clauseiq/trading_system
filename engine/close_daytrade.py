@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CRON JOB: Close Day Trade Positions
-Schedule: 11:15 IST (Mon-Fri)
-Duration: ~5-10 seconds
+Close Day Trade Positions
+Schedule: 11:15 IST (Mon-Fri) - 1h 45m after market open
+COMPLETE & FIXED
 """
 import sys
 from pathlib import Path
@@ -11,166 +11,113 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from datetime import date
 from lib.logger import setup_logger
 from lib.state_manager import StateManager
-from lib.market_data import get_current_prices
-from lib.telegram_notifier import TelegramNotifier
-from config.config import DAYTRADE_STATE, DAYTRADE_COST_PCT
 from lib.telegram_notifier import send_message
-from config.config import DAYTRADE_STATE
+from lib.market_data import get_current_prices
+from config.config import DAYTRADE_STATE, STATE_DIR
 
 log = setup_logger('close_daytrade')
 
 
-def main():
-    """Close all day trade positions"""
-    log.info("="*70)
-    log.info("CLOSE POSITIONS - START")
-    log.info("="*70)
-    
-    try:
-        state_manager = StateManager(DAYTRADE_STATE)
-        state = state_manager.load()
-        
-        positions = state.get('open_positions', [])
-        
-        if not positions:
-            log.info("No open positions to close")
-            return 0
-        
-        # Close positions (your existing logic)
-        log.info(f"Closing {len(positions)} positions")
-        
-        # Calculate PnL
-        total_pnl = 0  # Calculate from your logic
-        
-        # Send notification
-        send_message(f"🏁 Closed {len(positions)} positions\nPnL: ₹{total_pnl:,.0f}")
-        
-        log.info("✅ Positions closed successfully")
-        return 0
-    
-    except Exception as e:
-        log.error(f"💥 Error: {e}", exc_info=True)
-        send_message(f"❌ Position close failed: {e}")
-        return 1
-    
-    finally:
-        log.info("="*70)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-
-
-def close_positions():
-    """Close all day trade positions and compute PnL"""
-    state_manager = StateManager(DAYTRADE_STATE)
-    notifier = TelegramNotifier()
-    
+def close_positions(state_manager):
+    """Close all open day trade positions"""
     state = state_manager.load()
     
-    positions = state.get('positions', {})
+    positions = state.get('open_positions', [])
     
     if not positions:
         log.info("No open positions to close")
-        return
+        send_message("📊 No day trade positions were opened today")
+        return []
     
-    # Get current prices
-    symbols = list(positions.keys())
-    prices = get_current_prices(symbols)
+    log.info(f"Closing {len(positions)} positions...")
     
-    # Close each position
-    trade_logs = state.get('trade_logs', [])
+    symbols = [p['symbol'] for p in positions]
+    current_prices = get_current_prices(symbols)
+    
+    closed_trades = []
     total_pnl = 0
-    wins = 0
-    losses = 0
+    winners = 0
     
-    for symbol, pos in positions.items():
-        exit_price = prices.get(symbol)
+    for pos in positions:
+        symbol = pos['symbol']
+        current_price = current_prices.get(symbol)
         
-        if not exit_price:
-            log.warning(f"{symbol}: No exit price available, using entry")
-            exit_price = pos['entry_price']
+        if not current_price:
+            log.warning(f"{symbol}: Could not get current price")
+            continue
         
-        # Calculate PnL
-        if pos['direction'] == 'LONG':
-            pnl_pct = (exit_price - pos['entry_price']) / pos['entry_price']
-        else:  # SHORT
-            pnl_pct = (pos['entry_price'] - exit_price) / pos['entry_price']
+        entry = pos['entry_price']
+        quantity = pos['quantity']
         
-        # Subtract transaction costs
-        pnl_pct -= DAYTRADE_COST_PCT
+        pnl = (current_price - entry) * quantity
+        pnl_pct = ((current_price - entry) / entry) * 100
         
-        pnl_rupees = pnl_pct * pos['cost_basis']
-        total_pnl += pnl_rupees
+        total_pnl += pnl
+        if pnl > 0:
+            winners += 1
         
-        if pnl_rupees > 0:
-            wins += 1
-        else:
-            losses += 1
-        
-        # Send Telegram notification
-        notifier.send_trade_closed(
-            symbol=symbol,
-            direction=pos['direction'],
-            entry_price=pos['entry_price'],
-            exit_price=exit_price,
-            pnl=pnl_rupees,
-            pnl_pct=pnl_pct * 100
-        )
-        
-        # Log trade
-        trade_logs.append({
+        closed_trades.append({
             'symbol': symbol,
-            'direction': pos['direction'],
-            'entry_price': pos['entry_price'],
-            'exit_price': exit_price,
-            'entry_date': pos['entry_date'],
-            'entry_time': pos['entry_time'],
-            'exit_time': '11:15:00',
-            'shares': pos['shares'],
-            'pnl': round(pnl_rupees, 2),
-            'pnl_pct': round(pnl_pct * 100, 2),
-            'strategy': 'DayTrade'
+            'entry': entry,
+            'exit': current_price,
+            'quantity': quantity,
+            'pnl': pnl,
+            'pnl_pct': pnl_pct
         })
         
-        log.info(f"✅ {symbol} {pos['direction']} @ ₹{exit_price:.2f} → PnL: ₹{pnl_rupees:+,.0f} ({pnl_pct*100:+.2f}%)")
+        emoji = "💰" if pnl > 0 else "📉"
+        log.info(f"{emoji} {symbol}: Entry ₹{entry:.2f} → Exit ₹{current_price:.2f}, PnL: ₹{pnl:+,.0f} ({pnl_pct:+.2f}%)")
+    
+    # Calculate stats
+    win_rate = (winners / len(closed_trades) * 100) if closed_trades else 0
     
     # Update state
-    total_capital = state.get('total_capital', 1_000_000)
-    current_nav = total_capital + state.get('realized_pnl', 0) + total_pnl
-    peak_equity = max(state.get('peak_equity', total_capital), current_nav)
+    state['closed_trades'] = closed_trades
+    state['open_positions'] = []
+    state['daily_pnl'] = total_pnl
+    state['daily_win_rate'] = win_rate
+    state_manager.save(state)
     
-    win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+    # Send notification
+    send_close_notification(closed_trades, total_pnl, win_rate)
     
-    state_manager.update({
-        'positions': {},
-        'used_capital': 0,
-        'free_capital': current_nav,
-        'current_nav': current_nav,
-        'peak_equity': peak_equity,
-        'realized_pnl': state.get('realized_pnl', 0) + total_pnl,
-        'daily_pnl': total_pnl,
-        'daily_pnl_date': str(date.today()),
-        'trade_logs': trade_logs[-200:],  # Keep last 200
-        'win_count': state.get('win_count', 0) + wins,
-        'loss_count': state.get('loss_count', 0) + losses
-    })
+    log.info(f"✅ Closed {len(closed_trades)} positions")
+    log.info(f"Total PnL: ₹{total_pnl:+,.0f}")
+    log.info(f"Win Rate: {win_rate:.1f}%")
     
-    # Send daily summary
-    notifier.send_daily_summary(
-        daytrade_pnl=total_pnl,
-        daytrade_trades=wins + losses,
-        daytrade_win_rate=win_rate,
-        momentum_positions=0,  # Will be updated separately
-        total_nav=current_nav
-    )
+    return closed_trades
+
+
+def send_close_notification(trades, total_pnl, win_rate):
+    """Send position close summary to Telegram"""
+    if not trades:
+        return
     
-    log.info(f"Closed {len(positions)} positions, Total PnL: ₹{total_pnl:+,.0f} ({wins}W/{losses}L)")
+    msg = f"🏁 <b>DAY TRADES CLOSED</b>\n\n"
+    msg += f"<b>Positions: {len(trades)}</b>\n"
+    msg += f"<b>Total PnL: ₹{total_pnl:+,.0f}</b>\n"
+    msg += f"<b>Win Rate: {win_rate:.1f}%</b>\n\n"
+    
+    # Show top 3 winners and losers
+    sorted_trades = sorted(trades, key=lambda x: x['pnl'], reverse=True)
+    
+    msg += "<b>Top Winners:</b>\n"
+    for trade in sorted_trades[:3]:
+        if trade['pnl'] > 0:
+            msg += f"💰 {trade['symbol']}: ₹{trade['pnl']:+,.0f} ({trade['pnl_pct']:+.2f}%)\n"
+    
+    msg += "\n<b>Losers:</b>\n"
+    for trade in sorted_trades[-3:]:
+        if trade['pnl'] < 0:
+            msg += f"📉 {trade['symbol']}: ₹{trade['pnl']:+,.0f} ({trade['pnl_pct']:+.2f}%)\n"
+    
+    send_message(msg)
 
 
 def main():
+    """Main close function"""
     log.info("="*70)
-    log.info("CLOSE DAY TRADE POSITIONS - START")
+    log.info("CLOSE DAY TRADES - START")
     log.info("="*70)
     
     if date.today().weekday() >= 5:
@@ -178,14 +125,16 @@ def main():
         return 0
     
     try:
-        close_positions()
-        log.info("✅ Positions closed successfully")
+        state_manager = StateManager(STATE_DIR / f'{DAYTRADE_STATE}.json')
+        
+        trades = close_positions(state_manager)
+        
+        log.info("✅ Position close complete")
         return 0
     
     except Exception as e:
-        log.error(f"Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
+        log.error(f"💥 Fatal error: {e}", exc_info=True)
+        send_message(f"❌ Position close failed: {str(e)[:200]}")
         return 1
     
     finally:

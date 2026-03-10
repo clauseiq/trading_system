@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CRON JOB: Momentum Morning Session
+Momentum Morning Check
 Schedule: 09:20 IST (Mon-Fri)
-Duration: 5-30 seconds (rebalance day: up to 2 minutes)
+Check stop losses and targets for momentum positions
 """
 import sys
 from pathlib import Path
@@ -13,70 +13,64 @@ from lib.logger import setup_logger
 from lib.state_manager import StateManager
 from lib.telegram_notifier import TelegramNotifier
 from lib.market_data import get_current_prices
-from config.config import MOMENTUM_STATE
+from config.config import MOMENTUM_STATE, STATE_DIR
 
 log = setup_logger('momentum_morning')
 
 
-def check_stops_and_targets(state_manager, notifier):
-    """Check stop losses and target prices"""
+def check_positions(state_manager):
+    """Check all momentum positions for stops and targets"""
     state = state_manager.load()
+    
     positions = state.get('positions', {})
     
     if not positions:
-        log.info("No positions to check")
+        log.info("No momentum positions to check")
         return
     
-    # Get current prices
+    log.info(f"Checking {len(positions)} momentum positions...")
+    
     symbols = list(positions.keys())
-    prices = get_current_prices(symbols)
+    current_prices = get_current_prices(symbols)
     
-    closed = []
+    alerts = []
     
-    for symbol, pos in list(positions.items()):
-        current_price = prices.get(symbol)
+    for symbol, pos in positions.items():
+        current_price = current_prices.get(symbol)
+        
         if not current_price:
+            log.warning(f"{symbol}: Could not get current price")
             continue
         
         entry = pos['entry_price']
         stop = pos['stop_loss']
-        target = pos.get('target_price')
+        highest = pos.get('highest_price', entry)
         
-        # Check stop loss
+        pnl_pct = ((current_price - entry) / entry) * 100
+        
         if current_price <= stop:
-            pnl_pct = ((current_price - entry) / entry) * 100
-            log.info(f"🛑 {symbol} hit stop: ₹{current_price:.2f} (stop: ₹{stop:.2f})")
-            
-            if notifier:
-                notifier.send(f"🛑 <b>STOP HIT: {symbol}</b>\n\nExit: ₹{current_price:.2f}\nPnL: {pnl_pct:+.2f}%")
-            
-            closed.append(symbol)
-            continue
+            alerts.append(f"🛑 {symbol}: Hit stop @ ₹{current_price:.2f} ({pnl_pct:+.2f}%)")
+            log.warning(f"{symbol}: STOP HIT - Current ₹{current_price:.2f} <= Stop ₹{stop:.2f}")
         
-        # Check target
-        if target and current_price >= target:
-            pnl_pct = ((current_price - entry) / entry) * 100
-            log.info(f"🎯 {symbol} hit target: ₹{current_price:.2f} (target: ₹{target:.2f})")
-            
-            if notifier:
-                notifier.send(f"🎯 <b>TARGET HIT: {symbol}</b>\n\nExit: ₹{current_price:.2f}\nPnL: {pnl_pct:+.2f}%")
-            
-            closed.append(symbol)
-    
-    # Remove closed positions
-    for symbol in closed:
-        del positions[symbol]
+        elif current_price > highest:
+            pos['highest_price'] = current_price
+            log.info(f"{symbol}: New high @ ₹{current_price:.2f}")
+        
+        else:
+            log.info(f"{symbol}: ₹{current_price:.2f} ({pnl_pct:+.2f}%)")
     
     state['positions'] = positions
     state_manager.save(state)
     
-    if closed:
-        log.info(f"Closed {len(closed)} positions: {closed}")
+    if alerts:
+        notifier = TelegramNotifier()
+        notifier.send("\n".join(alerts))
 
 
 def main():
+    """Main morning check function"""
     log.info("="*70)
-    log.info("MOMENTUM MORNING SESSION - START")
+    log.info("MOMENTUM MORNING CHECK - START")
     log.info("="*70)
     
     if date.today().weekday() >= 5:
@@ -84,18 +78,14 @@ def main():
         return 0
     
     try:
-        state_manager = StateManager(MOMENTUM_STATE)
-        notifier = TelegramNotifier()
+        state_manager = StateManager(STATE_DIR / f'{MOMENTUM_STATE}.json')
+        check_positions(state_manager)
         
-        check_stops_and_targets(state_manager, notifier)
-        
-        log.info("✅ Morning session completed")
+        log.info("✅ Morning check complete")
         return 0
     
     except Exception as e:
-        log.error(f"Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
+        log.error(f"💥 Fatal error: {e}", exc_info=True)
         return 1
     
     finally:

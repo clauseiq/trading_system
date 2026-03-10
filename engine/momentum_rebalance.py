@@ -18,7 +18,7 @@ from lib.telegram_notifier import send_message
 from config.config import (
     MOMENTUM_STATE, MOMENTUM_UNIVERSE, MOMENTUM_MAX_POSITIONS,
     MOMENTUM_CAPITAL, MOMENTUM_LOOKBACK_DAYS, MOMENTUM_ATR_PERIOD,
-    MOMENTUM_ATR_MULTIPLIER, MOMENTUM_REBALANCE_DAYS
+    MOMENTUM_ATR_MULTIPLIER, MOMENTUM_REBALANCE_DAYS, STATE_DIR
 )
 
 log = setup_logger('momentum_rebalance')
@@ -28,10 +28,9 @@ def calculate_momentum_scores():
     """Calculate 14-day momentum for all stocks"""
     log.info(f"Calculating momentum for {len(MOMENTUM_UNIVERSE)} stocks...")
     
-    # Download all stocks at once (more efficient)
     stock_data = download_daily_data(
         symbols=MOMENTUM_UNIVERSE,
-        period='3mo'  # 3 months of daily data
+        period='3mo'
     )
     
     if not stock_data:
@@ -46,13 +45,11 @@ def calculate_momentum_scores():
                 log.warning(f"{symbol}: Insufficient data")
                 continue
             
-            # Calculate momentum (% return over lookback period)
             close = df['Close'].iloc[-1]
             close_14d_ago = df['Close'].iloc[-(MOMENTUM_LOOKBACK_DAYS + 1)]
             
             momentum = ((close - close_14d_ago) / close_14d_ago) * 100
             
-            # Calculate ATR for stop loss
             high = df['High']
             low = df['Low']
             close_series = df['Close']
@@ -85,10 +82,8 @@ def select_top_stocks(scores):
         log.error("No valid momentum scores calculated")
         return []
     
-    # Sort by momentum descending
     sorted_stocks = sorted(scores.items(), key=lambda x: x[1]['momentum'], reverse=True)
     
-    # Take top N
     top_stocks = sorted_stocks[:MOMENTUM_MAX_POSITIONS]
     
     log.info(f"Selected top {len(top_stocks)} stocks:")
@@ -111,14 +106,12 @@ def calculate_position_sizes(top_stocks):
         current_price = data['current_price']
         atr = data['atr']
         
-        # Calculate quantity
         quantity = int(capital_per_stock / current_price)
         
         if quantity == 0:
             log.warning(f"{symbol}: Price too high for position (₹{current_price:.2f})")
             continue
         
-        # Calculate stop loss (2 ATR below entry)
         stop_loss = current_price - (MOMENTUM_ATR_MULTIPLIER * atr)
         
         positions[symbol] = {
@@ -148,7 +141,6 @@ def close_existing_positions(state_manager):
     
     log.info(f"Closing {len(old_positions)} existing positions...")
     
-    # Get current prices
     symbols = list(old_positions.keys())
     prices = get_current_prices(symbols)
     
@@ -172,11 +164,10 @@ def close_existing_positions(state_manager):
         closed_summary.append(f"{symbol}: {pnl_pct:+.2f}% (₹{pnl:+,.0f})")
         log.info(f"Closed {symbol}: Entry ₹{entry:.2f} → Exit ₹{current_price:.2f}, PnL: ₹{pnl:+,.0f}")
     
-    # Send notification
     if closed_summary:
         msg = f"📊 <b>MOMENTUM REBALANCE</b>\n\n"
         msg += f"<b>Closed Positions ({len(closed_summary)}):</b>\n"
-        msg += "\n".join(closed_summary[:10])  # Limit to 10 lines
+        msg += "\n".join(closed_summary[:10])
         if len(closed_summary) > 10:
             msg += f"\n... and {len(closed_summary) - 10} more"
         msg += f"\n\n<b>Total PnL:</b> ₹{total_pnl:+,.0f}"
@@ -192,7 +183,6 @@ def enter_new_positions(positions, state_manager):
     
     log.info(f"Entering {len(positions)} new positions...")
     
-    # Prepare summary
     entry_summary = []
     total_invested = 0
     
@@ -203,16 +193,14 @@ def enter_new_positions(positions, state_manager):
         )
         total_invested += pos['invested']
     
-    # Save state
     state = state_manager.load()
     state['positions'] = positions
     state['days_since_rebalance'] = 0
     state['last_rebalance'] = date.today().isoformat()
     state_manager.save(state)
     
-    # Send notification
     msg = f"🚀 <b>NEW MOMENTUM POSITIONS</b>\n\n"
-    msg += "\n\n".join(entry_summary[:6])  # Limit to 6 positions
+    msg += "\n\n".join(entry_summary[:6])
     msg += f"\n\n<b>Total Invested:</b> ₹{total_invested:,.0f}"
     send_message(msg)
     
@@ -223,14 +211,12 @@ def should_rebalance(state_manager):
     """Check if it's time to rebalance"""
     state = state_manager.load()
     
-    # Get days since last rebalance
     days_since = state.get('days_since_rebalance', MOMENTUM_REBALANCE_DAYS)
     
     if days_since >= MOMENTUM_REBALANCE_DAYS:
         log.info(f"Rebalancing due: {days_since} days since last rebalance")
         return True
     
-    # Check if this is first run (no positions)
     if not state.get('positions'):
         log.info("Initial run: No positions exist, will create them")
         return True
@@ -245,7 +231,6 @@ def main():
     log.info("MOMENTUM REBALANCE - START")
     log.info("="*70)
     
-    # Check if trading day
     if date.today().weekday() >= 5:
         log.info("Not a trading day - skipping")
         return 0
@@ -253,24 +238,18 @@ def main():
     try:
         state_manager = StateManager(STATE_DIR / f'{MOMENTUM_STATE}.json')
         
-        # Check if rebalancing is due
         if not should_rebalance(state_manager):
             log.info("Rebalance not required today")
             return 0
         
-        # Step 1: Close existing positions
         close_existing_positions(state_manager)
         
-        # Step 2: Calculate momentum scores
         scores = calculate_momentum_scores()
         
-        # Step 3: Select top stocks
         top_stocks = select_top_stocks(scores)
         
-        # Step 4: Calculate position sizes
         positions = calculate_position_sizes(top_stocks)
         
-        # Step 5: Enter new positions
         enter_new_positions(positions, state_manager)
         
         log.info("✅ Momentum rebalance complete")
