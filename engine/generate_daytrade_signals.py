@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.logger import setup_logger
 from lib.state_manager import StateManager
 from core.signal_engine import generate_signals
-from config.config import DAYTRADE_STATE
+from config.config import DAYTRADE_STATE, STATE_DIR  # ✅ Import STATE_DIR
 
 log = setup_logger('generate_signals')
 
@@ -23,7 +23,8 @@ def main():
     log.info("="*70)
     
     try:
-        state_manager = StateManager(DAYTRADE_STATE)
+        # ✅ FIXED: Use correct path
+        state_manager = StateManager(STATE_DIR / f'{DAYTRADE_STATE}.json')
         signals = generate_signals(state_manager)
         
         if signals:
