@@ -1,171 +1,141 @@
 #!/usr/bin/env python3
 """
-CRON JOB: Execute Day Trades
+Execute Day Trades
 Schedule: 09:30 IST (Mon-Fri)
-Duration: ~2-5 seconds
 """
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from datetime import date, datetime
+from datetime import datetime, date
 from lib.logger import setup_logger
 from lib.state_manager import StateManager
-from lib.portfolio_manager import PortfolioManager
-from lib.risk_manager import RiskManager
-from lib.telegram_notifier import TelegramNotifier
-from config.config import DAYTRADE_STATE, PORTFOLIO_STATE, DAYTRADE_CAPITAL, DAYTRADE_MAX_CAPITAL_PCT
 from lib.telegram_notifier import send_message
-from config.config import DAYTRADE_STATE
+from lib.market_data import get_current_prices
+from config.config import (
+    DAYTRADE_STATE, DAYTRADE_CAPITAL, MAX_DAYTRADES_PER_DAY,
+    DAYTRADE_STOP_PCT, DAYTRADE_MIN_RR, DAYTRADE_MAX_RR, STATE_DIR
+)
 
 log = setup_logger('execute_daytrade')
 
 
-def main():
-    """Execute day trades"""
-    log.info("="*70)
-    log.info("EXECUTE TRADES - START")
-    log.info("="*70)
+def calculate_position_size(signal, capital_per_trade):
+    """Calculate position size with risk management"""
+    entry = signal['entry_price']
+    stop = signal['stop_loss']
     
-    try:
-        state_manager = StateManager(DAYTRADE_STATE)
-        state = state_manager.load()
-        
-        signals = state.get('signals', [])
-        
-        if not signals:
-            log.info("No signals to execute")
-            send_message("📊 No day trade signals today")
-            return 0
-        
-        # Execute trades (your existing logic here)
-        log.info(f"Executing {len(signals)} trades")
-        
-        # Send notification
-        send_message(f"✅ Executed {len(signals)} day trades")
-        
-        log.info("✅ Trades executed successfully")
-        return 0
+    risk_per_share = entry - stop
+    risk_amount = capital_per_trade * (DAYTRADE_STOP_PCT / 2)
+    quantity = int(risk_amount / risk_per_share)
     
-    except Exception as e:
-        log.error(f"💥 Error: {e}", exc_info=True)
-        send_message(f"❌ Trade execution failed: {e}")
-        return 1
+    max_quantity = int(capital_per_trade / entry)
+    quantity = min(quantity, max_quantity)
     
-    finally:
-        log.info("="*70)
+    return max(1, quantity)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-def execute_trades():
-    """Execute paper trades based on signals"""
-    state_manager = StateManager(DAYTRADE_STATE)
-    portfolio = PortfolioManager(PORTFOLIO_STATE)
-    risk_mgr = RiskManager()
-    notifier = TelegramNotifier()
-    
+def execute_trades(state_manager):
+    """Execute all valid day trade signals"""
     state = state_manager.load()
-    signals = state.get('daily_signals', [])
+    
+    signals = state.get('signals', [])
     
     if not signals:
         log.info("No signals to execute")
-        return 0
+        send_message("📊 No day trade signals today")
+        return []
     
-    # Get capital
-    free_capital = state.get('free_capital', DAYTRADE_CAPITAL)
-    total_capital = state.get('total_capital', DAYTRADE_CAPITAL)
-    current_nav = state.get('current_nav', DAYTRADE_CAPITAL)
-    peak_equity = state.get('peak_equity', DAYTRADE_CAPITAL)
+    symbols = [s['symbol'] for s in signals]
+    current_prices = get_current_prices(symbols)
     
-    # Calculate drawdown
-    drawdown_pct = ((peak_equity - current_nav) / peak_equity * 100) if peak_equity > 0 else 0.0
-    
-    positions = state.get('positions', {})
-    opened = []
-    
-    for sig in signals:
-        symbol = sig['symbol']
+    valid_signals = []
+    for signal in signals:
+        symbol = signal['symbol']
+        current_price = current_prices.get(symbol)
         
-        # Skip if already have position
-        if symbol in positions:
+        if not current_price:
+            log.warning(f"{symbol}: Could not get current price")
             continue
         
-        # Size the trade
-        trade = risk_mgr.size_trade(
-            free_capital=free_capital,
-            total_capital=total_capital,
-            entry_price=sig['live_price'],
-            stop_loss=sig['stop_loss'],
-            win_probability=sig['win_prob'],
-            direction=sig['direction'],
-            drawdown_pct=drawdown_pct,
-            strategy_name='DayTrade'
-        )
+        entry = signal['entry_price']
         
-        if not trade:
+        if abs(current_price - entry) / entry > 0.01:
+            log.warning(f"{symbol}: Price moved too much")
             continue
         
-        # Cap at max per trade
-        max_cost = free_capital * DAYTRADE_MAX_CAPITAL_PCT
-        if trade['cost_basis'] > max_cost:
-            trade['shares'] = int(max_cost / trade['entry_price'])
-            trade['cost_basis'] = trade['shares'] * trade['entry_price']
+        signal['actual_entry'] = current_price
+        valid_signals.append(signal)
+    
+    if not valid_signals:
+        log.info("No valid signals (prices moved)")
+        send_message("⚠️ Signals invalidated - price movement too large")
+        return []
+    
+    valid_signals = valid_signals[:MAX_DAYTRADES_PER_DAY]
+    capital_per_trade = DAYTRADE_CAPITAL / len(valid_signals)
+    
+    executed_trades = []
+    
+    for signal in valid_signals:
+        symbol = signal['symbol']
+        entry = signal['actual_entry']
+        stop = signal['stop_loss']
+        target = signal['target_price']
         
-        if trade['shares'] < 1 or trade['cost_basis'] > free_capital:
-            continue
+        quantity = calculate_position_size(signal, capital_per_trade)
         
-        # Record position
         position = {
             'symbol': symbol,
-            'direction': sig['direction'],
-            'entry_price': trade['entry_price'],
-            'stop_loss': trade['stop_loss'],
-            'target_price': trade['target_price'],
-            'shares': trade['shares'],
-            'cost_basis': trade['cost_basis'],
-            'win_prob': sig['win_prob'],
-            'rr_ratio': trade['rr_ratio'],
-            'entry_time': datetime.now().strftime("%H:%M:%S"),
-            'entry_date': str(date.today())
+            'entry_price': entry,
+            'quantity': quantity,
+            'stop_loss': stop,
+            'target_price': target,
+            'invested': quantity * entry,
+            'entry_time': datetime.now().isoformat(),
+            'direction': signal.get('direction', 'LONG'),
+            'confidence': signal.get('confidence', 0.85)
         }
         
-        positions[symbol] = position
-        opened.append(position)
+        executed_trades.append(position)
         
-        # Update capital
-        free_capital -= trade['cost_basis']
-        
-        # Send Telegram alert
-        notifier.send_trade_signal(
-            strategy="Day Trade XGBoost",
-            symbol=symbol,
-            direction=sig['direction'],
-            entry_price=trade['entry_price'],
-            stop_loss=trade['stop_loss'],
-            target=trade['target_price'],
-            shares=trade['shares'],
-            win_prob=sig['win_prob'],
-            rr_ratio=trade['rr_ratio']
-        )
-        
-        log.info(f"✅ {symbol} {sig['direction']} {trade['shares']} @ ₹{trade['entry_price']:.2f} "
-                f"(stop: ₹{trade['stop_loss']:.2f}, target: ₹{trade['target_price']:.2f})")
+        log.info(f"✅ {symbol}: {quantity} shares @ ₹{entry:.2f}, Stop: ₹{stop:.2f}, Target: ₹{target:.2f}")
     
-    # Update state
-    used_capital = sum(p['cost_basis'] for p in positions.values())
-    state_manager.update({
-        'positions': positions,
-        'used_capital': used_capital,
-        'free_capital': total_capital - used_capital
-    })
+    state['open_positions'] = executed_trades
+    state['execution_time'] = datetime.now().isoformat()
+    state_manager.save(state)
     
-    log.info(f"Opened {len(opened)} positions, using ₹{used_capital:,.0f}")
-    return len(opened)
+    send_execution_notification(executed_trades)
+    
+    return executed_trades
+
+
+def send_execution_notification(trades):
+    """Send trade execution summary to Telegram"""
+    if not trades:
+        return
+    
+    total_invested = sum(t['invested'] for t in trades)
+    
+    msg = f"📈 <b>DAY TRADES EXECUTED</b>\n\n"
+    msg += f"<b>Trades: {len(trades)}</b>\n"
+    msg += f"<b>Capital: ₹{total_invested:,.0f}</b>\n\n"
+    
+    for i, trade in enumerate(trades, 1):
+        msg += f"<b>{i}. {trade['symbol']}</b>\n"
+        msg += f"   Qty: {trade['quantity']} @ ₹{trade['entry_price']:.2f}\n"
+        msg += f"   Stop: ₹{trade['stop_loss']:.2f}\n"
+        msg += f"   Target: ₹{trade['target_price']:.2f}\n"
+        
+        rr_ratio = (trade['target_price'] - trade['entry_price']) / (trade['entry_price'] - trade['stop_loss'])
+        msg += f"   R:R: {rr_ratio:.1f}:1\n"
+        msg += f"   Confidence: {trade['confidence']*100:.1f}%\n\n"
+    
+    send_message(msg)
 
 
 def main():
+    """Main execution function"""
     log.info("="*70)
     log.info("EXECUTE DAY TRADES - START")
     log.info("="*70)
@@ -175,14 +145,21 @@ def main():
         return 0
     
     try:
-        count = execute_trades()
-        log.info(f"✅ Executed {count} trades")
-        return 0
+        # ✅ FIXED: Use correct path
+        state_manager = StateManager(STATE_DIR / f'{DAYTRADE_STATE}.json')
+        
+        trades = execute_trades(state_manager)
+        
+        if trades:
+            log.info(f"✅ Executed {len(trades)} trades successfully")
+            return 0
+        else:
+            log.info("No trades executed")
+            return 0
     
     except Exception as e:
-        log.error(f"Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
+        log.error(f"💥 Fatal error: {e}", exc_info=True)
+        send_message(f"❌ Trade execution failed: {str(e)[:200]}")
         return 1
     
     finally:
