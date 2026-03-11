@@ -23,6 +23,15 @@ from config.config import (
 
 log = setup_logger('momentum_rebalance')
 
+def extract_scalar(value):
+    """Extract scalar value from Series/DataFrame/scalar"""
+    if isinstance(value, pd.Series):
+        return float(value.iloc[0]) if len(value) > 0 else float(value)
+    elif isinstance(value, pd.DataFrame):
+        return float(value.iloc[0, 0]) if not value.empty else 0.0
+    else:
+        return float(value)
+
 
 def calculate_momentum_scores():
     """Calculate 14-day momentum for all stocks"""
