@@ -1,6 +1,7 @@
 """
 DAY TRADING SIGNAL ENGINE
 Generate intraday trading signals using trained model
+FIXED: Correct state check (model_status) and model path (STATE_DIR)
 """
 import pandas as pd
 import numpy as np
@@ -11,7 +12,8 @@ from lib.market_data import download_intraday_data, download_nifty_intraday
 from core.daytrading_model import build_stock_features, build_nifty_context, compute_atr
 from config.config import (
     DAYTRADE_STATE, DAYTRADE_UNIVERSE, DAYTRADE_CONVICTION_THRESHOLD,
-    DAYTRADE_TOP_N_LONGS, DAYTRADE_TOP_N_SHORTS, DAYTRADE_ATR_STOP_MULT
+    DAYTRADE_TOP_N_LONGS, DAYTRADE_TOP_N_SHORTS, DAYTRADE_ATR_STOP_MULT,
+    STATE_DIR
 )
 
 try:
@@ -36,15 +38,15 @@ def generate_signals(state_manager) -> List[Dict]:
     
     state = state_manager.load()
     
-    # Check if model is trained
-    if not state.get('model_trained'):
+    # Check if model is trained (FIXED: check model_status not model_trained)
+    if state.get('model_status') != 'trained':
         log.warning("Model not trained - cannot generate signals")
         return []
     
-    # Load model
-    model_path = DAYTRADE_STATE.parent / "daytrade_model.json"
+    # Load model (FIXED: use STATE_DIR not DAYTRADE_STATE.parent)
+    model_path = STATE_DIR / "daytrade_model.json"
     if not model_path.exists():
-        log.error("Model file not found")
+        log.error(f"Model file not found at {model_path}")
         return []
     
     try:
@@ -60,101 +62,78 @@ def generate_signals(state_manager) -> List[Dict]:
     stock_data = download_intraday_data(DAYTRADE_UNIVERSE, days_back=7)
     nifty_data = download_nifty_intraday(days_back=7)
     
-    if not stock_data:
-        log.warning("No stock data downloaded")
+    if not stock_data or nifty_data.empty:
+        log.error("Failed to download market data")
         return []
     
-    # Build Nifty context
-    nifty_ctx = None
-    if not nifty_data.empty:
-        nifty_ctx = build_nifty_context(nifty_data)
+    # Build features for all stocks
+    log.info(f"Building features for {len(stock_data)} stocks...")
     
-    # Generate predictions
     predictions = []
     
     for symbol, df in stock_data.items():
         try:
-            # Get latest complete bar
-            if len(df) < 20:
+            if df.empty or len(df) < 30:
                 continue
             
             # Build features
-            stock_feat = build_stock_features(df)
+            stock_feats = build_stock_features(df)
+            nifty_feats = build_nifty_context(nifty_data)
             
-            # Merge Nifty context
-            if nifty_ctx is not None:
-                for col in ['nifty_gap', 'nifty_morn_ret', 'nifty_rsi']:
-                    stock_feat[col] = nifty_ctx[col].reindex(df.index, method='ffill')
-            else:
-                stock_feat['nifty_gap'] = 0.0
-                stock_feat['nifty_morn_ret'] = 0.0
-                stock_feat['nifty_rsi'] = 50.0
+            # Combine features
+            features = {**stock_feats, **nifty_feats}
             
-            # Get latest row
-            latest = stock_feat[feature_cols].iloc[-1:].fillna(0)
+            # Ensure all feature columns exist
+            feature_row = pd.DataFrame([features])[feature_cols]
             
             # Predict
-            proba = model.predict_proba(latest)[0]
-            predicted_class = int(proba.argmax())
-            confidence = float(proba[predicted_class])
+            prob = model.predict_proba(feature_row)[0][1]  # Probability of UP
             
-            # Only high-conviction trades
-            if confidence < DAYTRADE_CONVICTION_THRESHOLD:
-                continue
-            
-            # Skip neutral signals
-            if predicted_class == 1:
-                continue
-            
-            # Get live price and ATR
-            live_price = float(df['Close'].iloc[-1])
-            atr = float(compute_atr(df, 14).iloc[-1])
-            
-            # Direction
-            direction = "LONG" if predicted_class == 2 else "SHORT"
-            
-            # Stop loss
-            if direction == "LONG":
-                stop_loss = live_price - (atr * DAYTRADE_ATR_STOP_MULT)
-            else:
-                stop_loss = live_price + (atr * DAYTRADE_ATR_STOP_MULT)
+            # Get current price and ATR
+            current_price = float(df['Close'].iloc[-1])
+            atr = compute_atr(df)
             
             predictions.append({
                 'symbol': symbol,
-                'direction': direction,
-                'win_prob': confidence,
-                'live_price': live_price,
-                'stop_loss': stop_loss,
-                'atr': atr,
-                'timestamp': str(pd.Timestamp.now())
+                'win_prob': prob,
+                'current_price': current_price,
+                'atr': atr
             })
-            
+        
         except Exception as e:
-            log.warning(f"{symbol}: Signal generation failed - {e}")
+            log.warning(f"{symbol}: Error generating signal - {e}")
             continue
     
-    # Rank and select top signals
     if not predictions:
-        log.info("No high-conviction signals generated")
+        log.warning("No valid predictions generated")
         return []
     
-    # Separate longs and shorts
-    longs = [p for p in predictions if p['direction'] == 'LONG']
-    shorts = [p for p in predictions if p['direction'] == 'SHORT']
+    # Filter by conviction threshold
+    high_conviction = [p for p in predictions if p['win_prob'] >= DAYTRADE_CONVICTION_THRESHOLD]
     
-    # Sort by confidence
-    longs.sort(key=lambda x: x['win_prob'], reverse=True)
-    shorts.sort(key=lambda x: x['win_prob'], reverse=True)
+    if not high_conviction:
+        log.info(f"No signals with conviction >= {DAYTRADE_CONVICTION_THRESHOLD}")
+        return []
     
-    # Take top N of each
-    selected = longs[:DAYTRADE_TOP_N_LONGS] + shorts[:DAYTRADE_TOP_N_SHORTS]
+    # Sort by conviction descending
+    high_conviction.sort(key=lambda x: x['win_prob'], reverse=True)
     
-    log.info(f"Generated {len(selected)} high-conviction signals ({len(longs[:DAYTRADE_TOP_N_LONGS])} longs, {len(shorts[:DAYTRADE_TOP_N_SHORTS])} shorts)")
+    # Take top N longs
+    signals = []
+    for pred in high_conviction[:DAYTRADE_TOP_N_LONGS]:
+        stop_loss = pred['current_price'] - (DAYTRADE_ATR_STOP_MULT * pred['atr'])
+        
+        signals.append({
+            'symbol': pred['symbol'],
+            'direction': 'LONG',
+            'win_prob': pred['win_prob'],
+            'live_price': pred['current_price'],
+            'stop_loss': stop_loss,
+            'atr': pred['atr']
+        })
+        
+        log.info(f"✅ {pred['symbol']}: Conviction={pred['win_prob']:.1%}, Price=₹{pred['current_price']:.2f}, Stop=₹{stop_loss:.2f}")
     
-    # Save to state
-    state_manager.update({
-        'daily_signals': selected,
-        'last_signal_date': str(date.today())
-    })
+    log.info(f"Generated {len(signals)} signals from {len(predictions)} stocks")
     
-    return selected
+    return signals
