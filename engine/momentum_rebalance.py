@@ -2,7 +2,7 @@
 """
 Momentum Rebalance - Select and Enter Top Momentum Stocks
 Schedule: Every 14 days at 09:20 IST
-FIXED: Use correct download_daily_data function
+FIXED: Added STATE_DIR import + scalar extraction for DataFrame values
 """
 import sys
 from pathlib import Path
@@ -22,6 +22,7 @@ from config.config import (
 )
 
 log = setup_logger('momentum_rebalance')
+
 
 def extract_scalar(value):
     """Extract scalar value from Series/DataFrame/scalar"""
@@ -54,26 +55,36 @@ def calculate_momentum_scores():
                 log.warning(f"{symbol}: Insufficient data")
                 continue
             
-            close = df['Close'].iloc[-1]
-            close_14d_ago = df['Close'].iloc[-(MOMENTUM_LOOKBACK_DAYS + 1)]
+            # Extract scalar values
+            close = extract_scalar(df['Close'].iloc[-1])
+            close_14d_ago = extract_scalar(df['Close'].iloc[-(MOMENTUM_LOOKBACK_DAYS + 1)])
             
             momentum = ((close - close_14d_ago) / close_14d_ago) * 100
             
+            # Calculate ATR - extract columns first
             high = df['High']
             low = df['Low']
             close_series = df['Close']
+            
+            # Handle multi-column DataFrames
+            if isinstance(high, pd.DataFrame):
+                high = high.iloc[:, 0]
+            if isinstance(low, pd.DataFrame):
+                low = low.iloc[:, 0]
+            if isinstance(close_series, pd.DataFrame):
+                close_series = close_series.iloc[:, 0]
             
             tr1 = high - low
             tr2 = abs(high - close_series.shift(1))
             tr3 = abs(low - close_series.shift(1))
             
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr = tr.tail(MOMENTUM_ATR_PERIOD).mean()
+            atr = extract_scalar(tr.tail(MOMENTUM_ATR_PERIOD).mean())
             
             scores[symbol] = {
-                'momentum': momentum,
-                'current_price': close,
-                'atr': atr
+                'momentum': float(momentum),  # Ensure it's a float
+                'current_price': float(close),
+                'atr': float(atr)
             }
             
             log.info(f"{symbol}: Momentum={momentum:.2f}%, Price=₹{close:.2f}, ATR=₹{atr:.2f}")
@@ -91,8 +102,10 @@ def select_top_stocks(scores):
         log.error("No valid momentum scores calculated")
         return []
     
+    # Sort by momentum descending
     sorted_stocks = sorted(scores.items(), key=lambda x: x[1]['momentum'], reverse=True)
     
+    # Take top N
     top_stocks = sorted_stocks[:MOMENTUM_MAX_POSITIONS]
     
     log.info(f"Selected top {len(top_stocks)} stocks:")
