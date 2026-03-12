@@ -1,7 +1,7 @@
 """
 DAY TRADING SIGNAL ENGINE
 Generate intraday trading signals using trained model
-FIXED: Correct state check (model_status) and model path (STATE_DIR)
+FIXED: Correct state check, model path, AND build_stock_features() signature
 """
 import pandas as pd
 import numpy as np
@@ -66,6 +66,9 @@ def generate_signals(state_manager) -> List[Dict]:
         log.error("Failed to download market data")
         return []
     
+    # Build NIFTY context once (FIXED: build this first)
+    nifty_ctx = build_nifty_context(nifty_data)
+    
     # Build features for all stocks
     log.info(f"Building features for {len(stock_data)} stocks...")
     
@@ -76,15 +79,17 @@ def generate_signals(state_manager) -> List[Dict]:
             if df.empty or len(df) < 30:
                 continue
             
-            # Build features
-            stock_feats = build_stock_features(df)
-            nifty_feats = build_nifty_context(nifty_data)
+            # Build features (FIXED: pass nifty_ctx as second argument)
+            features_df = build_stock_features(df, nifty_ctx)
             
-            # Combine features
-            features = {**stock_feats, **nifty_feats}
+            if features_df.empty:
+                continue
+            
+            # Get the latest row
+            latest_features = features_df.iloc[-1].to_dict()
             
             # Ensure all feature columns exist
-            feature_row = pd.DataFrame([features])[feature_cols]
+            feature_row = pd.DataFrame([latest_features])[feature_cols]
             
             # Predict
             prob = model.predict_proba(feature_row)[0][1]  # Probability of UP
